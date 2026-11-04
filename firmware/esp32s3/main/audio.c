@@ -14,6 +14,9 @@
 #define AUDIO_FRAME_SAMPLES 320
 #define AUDIO_FRAME_BYTES (AUDIO_FRAME_SAMPLES * sizeof(int16_t))
 #define AUDIO_PLAY_QUEUE_DEPTH 8
+#define AUDIO_DMA_DESC_NUM 6
+#define AUDIO_DMA_FRAME_SAMPLES 240
+#define AUDIO_DMA_DRAIN_MS ((AUDIO_DMA_DESC_NUM * AUDIO_DMA_FRAME_SAMPLES * 1000 / AUDIO_SAMPLE_RATE) + 10)
 
 // Go 后端按 20 ms PCM16 mono @ 16 kHz 二进制消息收发，每帧固定 640 字节。
 typedef struct {
@@ -30,9 +33,30 @@ static audio_send_frame_fn s_send_frame;
 static audio_playback_drained_fn s_playback_drained;
 static TickType_t s_last_invalid_frame_log;
 
+static bool write_i2s_tx(const uint8_t *data, size_t size)
+{
+    size_t offset = 0;
+    while (offset < size) {
+        size_t bytes_written = 0;
+        esp_err_t err = i2s_channel_write(s_tx_channel, data + offset, size - offset, &bytes_written,
+                                          pdMS_TO_TICKS(100));
+        if (bytes_written > 0) {
+            offset += bytes_written;
+        }
+        if (err != ESP_OK || bytes_written == 0) {
+            ESP_LOGW(TAG, "I2S playback write incomplete; error=%s bytes=%u/%u",
+                     esp_err_to_name(err), (unsigned)offset, (unsigned)size);
+            return false;
+        }
+    }
+    return true;
+}
+
 esp_err_t audio_init(void)
 {
     i2s_chan_config_t channel_config = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    channel_config.dma_desc_num = AUDIO_DMA_DESC_NUM;
+    channel_config.dma_frame_num = AUDIO_DMA_FRAME_SAMPLES;
     ESP_RETURN_ON_ERROR(i2s_new_channel(&channel_config, &s_tx_channel, &s_rx_channel), TAG,
                         "create I2S channels failed");
 
@@ -105,18 +129,21 @@ static void playback_task(void *arg)
             continue;
         }
         if (frame.drain_marker) {
-            if (s_playback_drained != NULL) {
-                s_playback_drained();
+            static const uint8_t silence[AUDIO_FRAME_BYTES] = {0};
+            // write 只表示数据进入 DMA；完整 DMA 环最多积压 90 ms，等待 100 ms 后再确认尾音送完。
+            while (true) {
+                if (write_i2s_tx(silence, sizeof(silence))) {
+                    vTaskDelay(pdMS_TO_TICKS(AUDIO_DMA_DRAIN_MS));
+                    if (s_playback_drained != NULL) {
+                        s_playback_drained();
+                    }
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(100));
             }
             continue;
         }
-        size_t bytes_written = 0;
-        esp_err_t err = i2s_channel_write(s_tx_channel, frame.pcm, frame.size, &bytes_written,
-                                          pdMS_TO_TICKS(100));
-        if (err != ESP_OK || bytes_written != frame.size) {
-            ESP_LOGW(TAG, "I2S playback write failed; error=%s bytes=%u/%u",
-                     esp_err_to_name(err), (unsigned)bytes_written, (unsigned)frame.size);
-        }
+        (void)write_i2s_tx(frame.pcm, frame.size);
     }
 }
 
