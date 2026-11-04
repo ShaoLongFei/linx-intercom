@@ -46,6 +46,8 @@ KWS_NUM_THREADS=1
 
 Janus Image、配置路径和配置项需在目标镜像中核对。健康检查调用 Janus HTTP transport 的 `/janus/info`。Go 服务读取 `JANUS_WS_URL`、`JANUS_API_SECRET` 和可选的 `JANUS_ADMIN_KEY`；业务房间会分配独立的持久数字 ID，并通过 AudioBridge 动态创建，运行时不会共用一个全局房间。密钥通过环境变量或平台 Secret 注入，不提交到仓库。首次运行应在限制访问的测试环境验证 Janus API Secret/Admin Key 与镜像配置一致。
 
+Compose 只覆盖镜像内的 `janus.jcfg` 主配置文件，保留镜像提供的 HTTP/WebSocket transport 和 AudioBridge 插件配置；不要把仅含主配置的 `deploy/janus/` 整个目录挂载到 `/usr/local/etc/janus`，否则会遮住其余模块配置。
+
 ## Go 服务数据
 
 SQLite 数据库默认文件为 `server/intercom.db`，可用 `DATABASE_PATH` 改到持久化卷。停止服务前发送 SIGTERM，服务会执行 HTTP graceful shutdown；备份时先停止写入或使用 SQLite 在线备份能力。日志走 JSON stdout，避免记录音频、Wi-Fi 密码或鉴权 token。

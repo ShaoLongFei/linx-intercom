@@ -8,7 +8,7 @@ services:
       - "${JANUS_WS_PORT:-8188}:8188/tcp"
       - "10000-10100:10000-10100/udp"
     volumes:
-      - ./janus:/usr/local/etc/janus:ro
+      - ./janus/janus.jcfg:/usr/local/etc/janus/janus.jcfg:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8088/janus/info >/dev/null"]
       interval: 15s
