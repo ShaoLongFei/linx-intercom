@@ -60,18 +60,47 @@ func TestAbortedTTSStopClearsPendingAudio(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	go forwardLinxResults(ctx, session)
-	for {
+	var aborted, restored ControlMessage
+	for index := 0; index < 2; index++ {
 		select {
 		case event := <-session.ControlOut:
-			if event.Type == "tts" && event.State == "stop" {
-				if !event.IsAborted || session.AudioRouter.Mode() != audio.ModeRoom || len(session.AudioOut) != 0 {
-					t.Fatalf("abort did not clear playback and restore room: event=%+v queued=%d", event, len(session.AudioOut))
-				}
-				return
+			if index == 0 {
+				aborted = event
+			} else {
+				restored = event
 			}
 		case <-ctx.Done():
-			t.Fatal("TTS abort was not handled")
+			t.Fatal("TTS abort or room restoration was not handled")
 		}
+	}
+	if aborted.Type != "tts" || aborted.State != "stop" || !aborted.IsAborted {
+		t.Fatalf("device must receive abort before room restoration: first event=%+v", aborted)
+	}
+	if restored.Type != "mode" || restored.Mode != "room" || session.AudioRouter.Mode() != audio.ModeRoom || len(session.AudioOut) != 0 {
+		t.Fatalf("abort did not restore room after clearing pending playback: second event=%+v queued=%d", restored, len(session.AudioOut))
+	}
+}
+
+func TestUnsolicitedPlaybackDrainDoesNotRestoreRoom(t *testing.T) {
+	session := newSession("device-a", "user-a", 8)
+	defer session.cancel()
+	session.AudioRouter = audio.NewRouter(wakeImmediately{}, 1)
+	session.AudioRouter.Process([]byte("wake"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go forwardDeviceEvents(ctx, session)
+	session.ControlIn <- ControlMessage{Type: "playback", State: "drained"}
+	session.ControlIn <- ControlMessage{Type: "probe"}
+	select {
+	case payload := <-session.LinxEventsIn:
+		if !strings.Contains(string(payload), `"type":"probe"`) {
+			t.Fatalf("forwarded device event = %s, want probe event", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("device event forwarding did not continue after playback acknowledgement")
+	}
+	if session.AudioRouter.Mode() != audio.ModeControl {
+		t.Fatal("unsolicited playback-drained acknowledgement restored the room route")
 	}
 }
 
@@ -162,6 +191,12 @@ func TestOpusTTSReachesDeviceBeforeStopAndRoomRestoration(t *testing.T) {
 		if event.Type == "tts" && event.State == "stop" {
 			if event.IsAborted || frames != expectedFrames {
 				t.Fatalf("normal stop preceded complete TTS: frames=%d want=%d aborted=%v", frames, expectedFrames, event.IsAborted)
+			}
+			if manager.Current("device-a").AudioRouter.Mode() != audio.ModeControl {
+				t.Fatal("server restored room route before device playback drained")
+			}
+			if err := conn.Write(ctx, websocket.MessageText, []byte(`{"type":"playback","state":"drained"}`)); err != nil {
+				t.Fatalf("send playback-drained acknowledgement: %v", err)
 			}
 			normalStop = true
 		}
@@ -304,6 +339,12 @@ func TestRoomWakeLinxTTSRoomRouteEndToEnd(t *testing.T) {
 		frames++
 	}
 	readControl("tts", "stop")
+	if session.AudioRouter.Mode() != audio.ModeControl {
+		t.Fatal("server restored room route before device playback drained")
+	}
+	if err := deviceConn.Write(ctx, websocket.MessageText, []byte(`{"type":"playback","state":"drained"}`)); err != nil {
+		t.Fatalf("send playback-drained acknowledgement: %v", err)
+	}
 	readControl("mode", "room")
 	roomDownlink = bytes.Repeat([]byte{0xA3}, 640)
 	session.AudioRouter.EnqueueJanusDownlink(roomDownlink)

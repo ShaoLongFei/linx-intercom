@@ -20,6 +20,40 @@ static bool s_started;
 static char s_headers[256];
 static uint8_t s_rx_frame[BACKEND_MAX_FRAME_BYTES];
 static int s_rx_frame_size;
+static portMUX_TYPE s_playback_ack_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_playback_ack_pending;
+static bool s_playback_ack_sending;
+
+static void send_pending_playback_ack(void)
+{
+    static const char event[] = "{\"type\":\"playback\",\"state\":\"drained\"}";
+    portENTER_CRITICAL(&s_playback_ack_mux);
+    bool should_send = s_playback_ack_pending && !s_playback_ack_sending;
+    if (should_send) {
+        s_playback_ack_sending = true;
+    }
+    portEXIT_CRITICAL(&s_playback_ack_mux);
+    if (!should_send) {
+        return;
+    }
+    if (!s_started || !esp_websocket_client_is_connected(s_client)) {
+        portENTER_CRITICAL(&s_playback_ack_mux);
+        s_playback_ack_sending = false;
+        portEXIT_CRITICAL(&s_playback_ack_mux);
+        ESP_LOGW(TAG, "playback-drained acknowledgement deferred; backend is disconnected");
+        return;
+    }
+    int sent = esp_websocket_client_send_text(s_client, event, sizeof(event) - 1, pdMS_TO_TICKS(100));
+    portENTER_CRITICAL(&s_playback_ack_mux);
+    s_playback_ack_sending = false;
+    portEXIT_CRITICAL(&s_playback_ack_mux);
+    if (sent != (int)(sizeof(event) - 1)) {
+        ESP_LOGW(TAG, "playback-drained acknowledgement failed; expected_bytes=%u sent_bytes=%d",
+                 (unsigned)(sizeof(event) - 1), sent);
+        return;
+    }
+    ESP_LOGI(TAG, "playback-drained acknowledgement sent; waiting for room-mode confirmation");
+}
 
 static void handle_control_event(const char *payload, int size)
 {
@@ -32,12 +66,21 @@ static void handle_control_event(const char *payload, int size)
     const cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "state");
     const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
     const cJSON *aborted = cJSON_GetObjectItemCaseSensitive(root, "is_aborted");
-    if (cJSON_IsString(type) &&
-        ((strcmp(type->valuestring, "mode") == 0 && cJSON_IsString(mode) &&
-          strcmp(mode->valuestring, "control") == 0) ||
-         (strcmp(type->valuestring, "tts") == 0 && cJSON_IsString(state) &&
-          strcmp(state->valuestring, "stop") == 0 && cJSON_IsTrue(aborted)))) {
+    bool control_mode = cJSON_IsString(type) && strcmp(type->valuestring, "mode") == 0 &&
+                        cJSON_IsString(mode) && strcmp(mode->valuestring, "control") == 0;
+    bool tts_stopped = cJSON_IsString(type) && strcmp(type->valuestring, "tts") == 0 &&
+                       cJSON_IsString(state) && strcmp(state->valuestring, "stop") == 0;
+    bool room_mode = cJSON_IsString(type) && strcmp(type->valuestring, "mode") == 0 &&
+                     cJSON_IsString(mode) && strcmp(mode->valuestring, "room") == 0;
+    if (control_mode || (tts_stopped && cJSON_IsTrue(aborted))) {
         audio_clear_playback();
+    } else if (tts_stopped) {
+        audio_wait_for_playback_drain();
+    }
+    if (room_mode) {
+        portENTER_CRITICAL(&s_playback_ack_mux);
+        s_playback_ack_pending = false;
+        portEXIT_CRITICAL(&s_playback_ack_mux);
     }
     ESP_LOGI(TAG, "control event received; type=%s state=%s mode=%s",
              cJSON_IsString(type) ? type->valuestring : "unknown",
@@ -55,6 +98,7 @@ static void on_websocket_event(void *arg, esp_event_base_t base, int32_t event_i
     case WEBSOCKET_EVENT_CONNECTED:
         s_rx_frame_size = 0;
         ESP_LOGI(TAG, "backend WebSocket connected; server_session_id is managed server-side");
+        send_pending_playback_ack();
         break;
     case WEBSOCKET_EVENT_DISCONNECTED:
         s_rx_frame_size = 0;
@@ -147,4 +191,12 @@ bool backend_client_send_audio(const uint8_t *pcm, size_t size)
         return false;
     }
     return true;
+}
+
+void backend_client_send_playback_drained(void)
+{
+    portENTER_CRITICAL(&s_playback_ack_mux);
+    s_playback_ack_pending = true;
+    portEXIT_CRITICAL(&s_playback_ack_mux);
+    send_pending_playback_ack();
 }

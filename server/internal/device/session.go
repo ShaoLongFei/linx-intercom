@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -36,14 +37,16 @@ type Session struct {
 	AudioRouter  *audio.Router
 	Done         <-chan struct{}
 
-	mu          sync.Mutex
-	conn        *websocket.Conn
-	generation  uint64
-	timer       *time.Timer
-	cancel      context.CancelFunc
-	mediaJoinMu sync.Mutex
-	mediaMu     sync.Mutex
-	media       *roomMediaBinding
+	mu                    sync.Mutex
+	conn                  *websocket.Conn
+	generation            uint64
+	timer                 *time.Timer
+	cancel                context.CancelFunc
+	mediaJoinMu           sync.Mutex
+	mediaMu               sync.Mutex
+	media                 *roomMediaBinding
+	// 仅在本轮正常 TTS 停止后接受设备确认，避免重连重放的旧确认切回房间。
+	awaitingPlaybackDrain atomic.Bool
 }
 
 func newSession(deviceID, userID string, queueSize int) *Session {

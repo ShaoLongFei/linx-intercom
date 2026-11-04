@@ -101,6 +101,14 @@ func forwardDeviceEvents(ctx context.Context, session *Session) {
 		case <-ctx.Done():
 			return
 		case message := <-session.ControlIn:
+			if message.Type == "playback" && message.State == "drained" {
+				if !session.awaitingPlaybackDrain.CompareAndSwap(true, false) {
+					slog.Warn("unsolicited device playback acknowledgement ignored", "device_id", session.DeviceID, "session_id", session.ID)
+					continue
+				}
+				completeControl(session, "device_playback_drained")
+				continue
+			}
 			payload, err := json.Marshal(message)
 			if err != nil {
 				slog.Error("device event encode failed", "device_id", session.DeviceID, "session_id", session.ID, "error", err)
@@ -140,8 +148,16 @@ func forwardLinxResults(ctx context.Context, session *Session) {
 			}
 			if message.Type == "tts" && message.State == "stop" {
 				if message.IsAborted {
+					clearQueue(session.AudioOut)
+					select {
+					case session.ControlOut <- message:
+					case <-ctx.Done():
+						return
+					}
 					completeControl(session, "tts_aborted")
+					continue
 				} else {
+					session.awaitingPlaybackDrain.Store(true)
 					select {
 					case session.AudioOut <- downlinkMessage{event: &message, mode: audio.ModeControl}:
 					case <-ctx.Done():
@@ -161,6 +177,7 @@ func forwardLinxResults(ctx context.Context, session *Session) {
 
 func completeControl(session *Session, reason string) {
 	if session.AudioRouter.CompleteControl() {
+		session.awaitingPlaybackDrain.Store(false)
 		clearQueue(session.AudioOut)
 		slog.Info("control response completed; restoring room audio route", "device_id", session.DeviceID, "session_id", session.ID, "reason", reason)
 		select {

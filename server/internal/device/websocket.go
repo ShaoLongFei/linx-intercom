@@ -126,9 +126,6 @@ func writeMessages(ctx context.Context, session *Session, conn *websocket.Conn) 
 				if err := writeControl(ctx, session, conn, *message.event); err != nil {
 					return
 				}
-				if message.event.Type == "tts" && message.event.State == "stop" {
-					completeControl(session, "tts_drained")
-				}
 				continue
 			}
 			if err := conn.Write(ctx, websocket.MessageBinary, message.audio); err != nil {

@@ -18,6 +18,7 @@
 // Go 后端按 20 ms PCM16 mono @ 16 kHz 二进制消息收发，每帧固定 640 字节。
 typedef struct {
     size_t size;
+    bool drain_marker;
     uint8_t pcm[AUDIO_FRAME_BYTES];
 } audio_frame_t;
 
@@ -26,6 +27,7 @@ static i2s_chan_handle_t s_rx_channel;
 static i2s_chan_handle_t s_tx_channel;
 static QueueHandle_t s_play_queue;
 static audio_send_frame_fn s_send_frame;
+static audio_playback_drained_fn s_playback_drained;
 static TickType_t s_last_invalid_frame_log;
 
 esp_err_t audio_init(void)
@@ -102,6 +104,12 @@ static void playback_task(void *arg)
         if (xQueueReceive(s_play_queue, &frame, portMAX_DELAY) != pdTRUE) {
             continue;
         }
+        if (frame.drain_marker) {
+            if (s_playback_drained != NULL) {
+                s_playback_drained();
+            }
+            continue;
+        }
         size_t bytes_written = 0;
         esp_err_t err = i2s_channel_write(s_tx_channel, frame.pcm, frame.size, &bytes_written,
                                           pdMS_TO_TICKS(100));
@@ -112,10 +120,13 @@ static void playback_task(void *arg)
     }
 }
 
-esp_err_t audio_start(audio_send_frame_fn send_frame)
+esp_err_t audio_start(audio_send_frame_fn send_frame, audio_playback_drained_fn playback_drained)
 {
     ESP_RETURN_ON_FALSE(send_frame != NULL, ESP_ERR_INVALID_ARG, TAG, "audio sender is required");
+    ESP_RETURN_ON_FALSE(playback_drained != NULL, ESP_ERR_INVALID_ARG, TAG,
+                        "playback drain acknowledgement sender is required");
     s_send_frame = send_frame;
+    s_playback_drained = playback_drained;
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_rx_channel), TAG, "enable I2S receive channel failed");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx_channel), TAG, "enable I2S transmit channel failed");
     BaseType_t ok = xTaskCreate(capture_task, "mic_capture", 4096, NULL, 6, NULL);
@@ -137,18 +148,40 @@ void audio_play_frame(const uint8_t *pcm, size_t size)
     }
     audio_frame_t frame = {.size = size};
     memcpy(frame.pcm, pcm, size);
+    if (xQueueSend(s_play_queue, &frame, 0) == pdTRUE) {
+        return;
+    }
+
+    audio_frame_t stale;
+    bool dropped_oldest = xQueueReceive(s_play_queue, &stale, 0) == pdTRUE;
+    if (dropped_oldest && stale.drain_marker) {
+        (void)xQueueSendToFront(s_play_queue, &stale, 0);
+        ESP_LOGW(TAG, "speaker queue full after playback marker; incoming audio frame dropped");
+        return;
+    }
     if (xQueueSend(s_play_queue, &frame, 0) != pdTRUE) {
-        audio_frame_t stale;
-        (void)xQueueReceive(s_play_queue, &stale, 0);
-        (void)xQueueSend(s_play_queue, &frame, 0);
+        ESP_LOGW(TAG, "speaker queue remained full; incoming audio frame dropped");
+        return;
+    }
+    if (dropped_oldest) {
         ESP_LOGW(TAG, "speaker queue full; oldest audio frame dropped");
     }
+}
+
+void audio_wait_for_playback_drain(void)
+{
+    audio_frame_t marker = {.drain_marker = true};
+    if (s_play_queue == NULL || xQueueSend(s_play_queue, &marker, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGW(TAG, "playback-drained marker could not be queued");
+        return;
+    }
+    ESP_LOGI(TAG, "playback-drained marker queued behind pending audio");
 }
 
 void audio_clear_playback(void)
 {
     if (s_play_queue != NULL) {
-        // 正常 TTS 结束必须保留尾音；只有切入控制模式或明确打断时清理待播放帧。
+        // 正常 TTS 停止等待此队列和当前 I2S 写入完成；控制切换/打断才清空排队帧。
         UBaseType_t pending = uxQueueMessagesWaiting(s_play_queue);
         xQueueReset(s_play_queue);
         ESP_LOGI(TAG, "speaker playback queue cleared; pending_frames=%u", (unsigned)pending);

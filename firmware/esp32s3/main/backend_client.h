@@ -7,3 +7,4 @@
 
 esp_err_t backend_client_start(void);
 bool backend_client_send_audio(const uint8_t *pcm, size_t size);
+void backend_client_send_playback_drained(void);

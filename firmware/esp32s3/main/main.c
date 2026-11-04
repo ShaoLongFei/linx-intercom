@@ -20,6 +20,6 @@ void app_main(void)
     ESP_ERROR_CHECK(device_config_init());
     ESP_ERROR_CHECK(audio_init());
     ESP_ERROR_CHECK(provisioning_init());
-    ESP_ERROR_CHECK(audio_start(backend_client_send_audio));
+    ESP_ERROR_CHECK(audio_start(backend_client_send_audio, backend_client_send_playback_drained));
     ESP_LOGI(TAG, "ESP32-S3 intercom initialized; waiting for Wi-Fi provisioning or reconnect");
 }
