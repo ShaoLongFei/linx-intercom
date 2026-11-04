@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"linx-intercom/server/internal/store"
@@ -17,10 +18,12 @@ import (
 type OnlineFunc func(userID string) bool
 
 type Handler struct {
-	store  *store.Store
-	online OnlineFunc
-	token  string
-	rooms  RoomHooks
+	store    *store.Store
+	online   OnlineFunc
+	token    string
+	rooms    RoomHooks
+	streamMu sync.Mutex
+	streams  map[string]*sseSession
 }
 
 type RoomHooks struct {
@@ -29,7 +32,7 @@ type RoomHooks struct {
 }
 
 func NewHandler(db *store.Store, online OnlineFunc, token string, roomHooks ...RoomHooks) http.Handler {
-	h := &Handler{store: db, online: online, token: token}
+	h := &Handler{store: db, online: online, token: token, streams: make(map[string]*sseSession)}
 	if len(roomHooks) > 0 {
 		h.rooms = roomHooks[0]
 	}
@@ -70,27 +73,13 @@ type toolSpec struct {
 	InputSchema map[string]any `json:"inputSchema"`
 }
 
-func (h *Handler) sse(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) message(w http.ResponseWriter, r *http.Request) {
 	if !h.authorized(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	scheme := "https"
-	if r.TLS == nil {
-		scheme = "http"
-	}
-	_, _ = fmt.Fprintf(w, "event: endpoint\ndata: %s://%s/mcp/message\n\n", scheme, r.Host)
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
-	<-r.Context().Done()
-}
-
-func (h *Handler) message(w http.ResponseWriter, r *http.Request) {
-	if !h.authorized(r) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	if r.URL.Query().Has("sessionid") {
+		h.sseMessage(w, r)
 		return
 	}
 	deviceID := r.Header.Get("X-Linx-Device-Id")
@@ -109,11 +98,17 @@ func (h *Handler) message(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON-RPC request", http.StatusBadRequest)
 		return
 	}
+	result := h.execute(r.Context(), request, deviceID, userID)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(rpcResponse{JSONRPC: "2.0", ID: json.RawMessage(request.ID), Result: result})
+}
+
+func (h *Handler) execute(ctx context.Context, request rpcRequest, deviceID, userID string) toolResult {
 	if request.Method == "tools/call" {
 		// 不记录 arguments：参数中可能有一次性配对码等不适合进入日志的内容。
 		slog.Info("MCP tool call started", "device_id", deviceID, "user_id", userID, "tool", request.Params.Name)
 	}
-	result, err := h.call(r.Context(), request, userID)
+	result, err := h.call(ctx, request, userID)
 	if err != nil {
 		slog.Warn("MCP tool call failed", "device_id", deviceID, "tool", request.Params.Name, "error", err)
 		result.IsError = true
@@ -121,8 +116,7 @@ func (h *Handler) message(w http.ResponseWriter, r *http.Request) {
 	} else if request.Method == "tools/call" {
 		slog.Info("MCP tool call completed", "device_id", deviceID, "user_id", userID, "tool", request.Params.Name)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(rpcResponse{JSONRPC: "2.0", ID: json.RawMessage(request.ID), Result: result})
+	return result
 }
 
 func (h *Handler) authorized(r *http.Request) bool {

@@ -51,3 +51,11 @@ Janus Image、配置路径和配置项需在目标镜像中核对。健康检查
 SQLite 数据库默认文件为 `server/intercom.db`，可用 `DATABASE_PATH` 改到持久化卷。停止服务前发送 SIGTERM，服务会执行 HTTP graceful shutdown；备份时先停止写入或使用 SQLite 在线备份能力。日志走 JSON stdout，避免记录音频、Wi-Fi 密码或鉴权 token。
 
 个人机器及测试设备配置放在仓库根目录 `.local/`，不要提交。
+
+## 灵矽云端 MCP
+
+按[灵矽云端 MCP 文档](https://linx.qiniu.com/docs/xrobot/mcp/software-mcp)，在智能体配置中登记 `https://你的域名/mcp`。平台请求必须携带 `Authorization: Bearer <MCP_API_TOKEN>`，并提供与本服务已登记设备一致的 `X-Linx-Device-Id`。当前实现按设备建立独立 SSE 会话，因此 GET 和后续 POST 都需要该设备头；实际平台是否为首次 GET 提供该头还需真实账号联调确认。
+
+`GET /mcp` 返回 SSE `endpoint` 事件，地址为 `/mcp/message?sessionid=...`；客户端向该地址发送 JSON-RPC 请求，POST 返回 202，实际响应通过原 SSE 连接的 `message` 事件返回。标准 `initialize`、初始化通知、`tools/list`、`tools/call` 和 `ping` 由官方 Go MCP SDK 处理。反向代理需允许长连接、关闭 SSE 响应缓冲、保留查询参数和请求头；相对 endpoint 地址会沿用客户端 HTTPS origin。
+
+每条 SSE 会话的身份在 GET 鉴权后固定，POST 不允许换成另一台设备。断开后删除临时会话，旧 POST 地址返回 404；重连时重新建立 MCP 传输会话，SQLite 中的用户、好友和房间不受影响。不带 `sessionid` 的直接 POST 仍可用于本地业务诊断，它不是标准 SSE 传输。
