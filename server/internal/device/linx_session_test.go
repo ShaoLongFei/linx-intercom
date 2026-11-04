@@ -104,6 +104,26 @@ func TestUnsolicitedPlaybackDrainDoesNotRestoreRoom(t *testing.T) {
 	}
 }
 
+func TestMicrophoneAudioIsNotQueuedForJanusWithoutRoom(t *testing.T) {
+	session := newSession("device-a", "user-a", 64)
+	defer session.cancel()
+	defer session.AudioRouter.Close()
+	StartAudioRouting(session)
+	for range 48 {
+		session.EnqueueAudioIn(make([]byte, 640))
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && (len(session.AudioIn) != 0 || len(session.AudioRouter.RoomAudio()) != 0) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := len(session.JanusAudioIn); got != 0 {
+		t.Fatalf("microphone frames queued for Janus without an active room: %d", got)
+	}
+	if got := len(session.AudioRouter.RoomAudio()); got != 0 {
+		t.Fatalf("unrouted room audio remained buffered without a room: %d", got)
+	}
+}
+
 func TestOpusTTSReachesDeviceBeforeStopAndRoomRestoration(t *testing.T) {
 	packet, err := base64.StdEncoding.DecodeString("aIICsDXtEa4Hiu5g6R4d385gDeJLmQ0Pw3kC8PgaMl5qWLDEO490pQ==")
 	if err != nil {
@@ -276,6 +296,15 @@ func TestRoomWakeLinxTTSRoomRouteEndToEnd(t *testing.T) {
 			}
 		}
 	}
+	// 该测试只验证路由，不启动真实 Janus；占位绑定表示设备已加入房间。
+	session.mediaMu.Lock()
+	session.media = &roomMediaBinding{}
+	session.mediaMu.Unlock()
+	defer func() {
+		session.mediaMu.Lock()
+		session.media = nil
+		session.mediaMu.Unlock()
+	}()
 	writeMicFrame := func(value byte) {
 		t.Helper()
 		if err := deviceConn.Write(ctx, websocket.MessageBinary, bytes.Repeat([]byte{value}, 640)); err != nil {

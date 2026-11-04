@@ -71,7 +71,14 @@ func StartAudioRouting(session *Session) {
 				} else if transition == audio.TransitionDetectionError {
 					slog.Warn("wake-word frame withheld after detector error", "device_id", session.DeviceID, "session_id", session.ID)
 				}
-				drainRoutedAudio(session.AudioRouter.RoomAudio(), session.JanusAudioIn, session.DeviceID, session.ID, "Janus")
+				session.mediaMu.Lock()
+				inRoom := session.media != nil
+				session.mediaMu.Unlock()
+				if inRoom {
+					drainRoutedAudio(session.AudioRouter.RoomAudio(), session.JanusAudioIn, session.DeviceID, session.ID, "Janus")
+				} else {
+					discardAudio(session.AudioRouter.RoomAudio())
+				}
 				drainRoutedAudio(session.AudioRouter.LinxAudio(), session.LinxAudioIn, session.DeviceID, session.ID, "Linx")
 			case frame := <-session.AudioRouter.JanusDownlink():
 				if session.AudioRouter.Mode() == audio.ModeRoom && session.EnqueueAudioOut(frame) {
@@ -89,6 +96,16 @@ func drainRoutedAudio(source <-chan []byte, target chan []byte, deviceID, sessio
 			if enqueueAudio(target, frame) {
 				slog.Warn("routed microphone queue dropped stale frame", "device_id", deviceID, "session_id", sessionID, "route", route)
 			}
+		default:
+			return
+		}
+	}
+}
+
+func discardAudio(source <-chan []byte) {
+	for {
+		select {
+		case <-source:
 		default:
 			return
 		}
