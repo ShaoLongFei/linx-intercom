@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"linx-intercom/server/internal/audio"
 )
 
 const sessionQueueSize = 32
@@ -20,6 +21,7 @@ type Session struct {
 	UserID   string
 
 	AudioIn       chan []byte
+	JanusAudioIn  chan []byte
 	AudioOut      chan []byte
 	ControlIn     chan ControlMessage
 	ControlOut    chan ControlMessage
@@ -27,6 +29,7 @@ type Session struct {
 	LinxAudioOut  chan []byte
 	LinxEventsIn  chan json.RawMessage
 	LinxEventsOut chan json.RawMessage
+	AudioRouter   *audio.Router
 	Done          <-chan struct{}
 
 	mu         sync.Mutex
@@ -43,6 +46,7 @@ func newSession(deviceID, userID string, queueSize int) *Session {
 		DeviceID:      deviceID,
 		UserID:        userID,
 		AudioIn:       make(chan []byte, queueSize),
+		JanusAudioIn:  make(chan []byte, queueSize),
 		AudioOut:      make(chan []byte, queueSize),
 		ControlIn:     make(chan ControlMessage, queueSize),
 		ControlOut:    make(chan ControlMessage, queueSize),
@@ -50,13 +54,18 @@ func newSession(deviceID, userID string, queueSize int) *Session {
 		LinxAudioOut:  make(chan []byte, queueSize),
 		LinxEventsIn:  make(chan json.RawMessage, queueSize),
 		LinxEventsOut: make(chan json.RawMessage, queueSize),
+		AudioRouter:   audio.NewRouter(audio.DisabledDetector{}, 15),
 		Done:          ctx.Done(),
 		cancel:        cancel,
 	}
 }
 
 func (s *Session) EnqueueAudioIn(frame []byte) bool {
-	return enqueueAudio(s.AudioIn, frame)
+	dropped := enqueueAudio(s.AudioIn, frame)
+	if dropped {
+		return true
+	}
+	return false
 }
 
 func (s *Session) EnqueueAudioOut(frame []byte) bool {
@@ -170,6 +179,7 @@ func (m *SessionManager) Attach(deviceID string, conn *websocket.Conn) (*Session
 	}
 	if resuming {
 		clearQueue(session.AudioIn)
+		clearQueue(session.JanusAudioIn)
 		clearQueue(session.AudioOut)
 		clearQueue(session.ControlIn)
 		clearQueue(session.ControlOut)

@@ -99,11 +99,17 @@ func (h *Handler) message(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON-RPC request", http.StatusBadRequest)
 		return
 	}
+	if request.Method == "tools/call" {
+		// 不记录 arguments：参数中可能有一次性配对码等不适合进入日志的内容。
+		slog.Info("MCP tool call started", "device_id", deviceID, "user_id", userID, "tool", request.Params.Name)
+	}
 	result, err := h.call(request, userID)
 	if err != nil {
 		slog.Warn("MCP tool call failed", "device_id", deviceID, "tool", request.Params.Name, "error", err)
 		result.IsError = true
 		result.Content = textContent("操作未完成：" + err.Error()).Content
+	} else if request.Method == "tools/call" {
+		slog.Info("MCP tool call completed", "device_id", deviceID, "user_id", userID, "tool", request.Params.Name)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(rpcResponse{JSONRPC: "2.0", ID: json.RawMessage(request.ID), Result: result})
@@ -127,7 +133,9 @@ func (h *Handler) call(request rpcRequest, userID string) (toolResult, error) {
 		return toolResult{Tools: []toolSpec{
 			{Name: "create_room", Description: "创建语音对讲房间", InputSchema: objectSchema(map[string]any{"name": stringSchema("房间名称")})},
 			{Name: "pair_friend", Description: "生成一次性好友配对码", InputSchema: objectSchema(nil)},
-			{Name: "accept_friend", Description: "确认好友配对码", InputSchema: objectSchema(map[string]any{"code": stringSchema("对方设备读出的配对码")})},
+			{Name: "accept_friend", Description: "提交面对面交换的一次性好友配对码", InputSchema: objectSchema(map[string]any{"code": stringSchema("对方设备读出的配对码")})},
+			{Name: "list_pairing_requests", Description: "查询等待本人确认的好友配对请求", InputSchema: objectSchema(nil)},
+			{Name: "confirm_friendship", Description: "确认好友配对请求", InputSchema: objectSchema(map[string]any{"request_id": stringSchema("待确认配对请求编号")})},
 			{Name: "invite_member", Description: "邀请在线好友进入房间", InputSchema: objectSchema(map[string]any{"room_id": stringSchema("房间编号"), "device_id": stringSchema("好友设备编号")})},
 			{Name: "accept_invitation", Description: "确认加入房间邀请", InputSchema: objectSchema(map[string]any{"invitation_id": stringSchema("邀请编号")})},
 			{Name: "list_online_members", Description: "查询房间当前在线成员", InputSchema: objectSchema(map[string]any{"room_id": stringSchema("房间编号")})},
@@ -159,10 +167,26 @@ func (h *Handler) call(request rpcRequest, userID string) (toolResult, error) {
 		if err != nil {
 			return toolResult{}, err
 		}
-		if err := h.store.AcceptPairCode(userID, code); err != nil {
+		if _, err := h.store.AcceptPairCode(userID, code); err != nil {
 			return toolResult{}, err
 		}
-		return textContent("好友配对成功"), nil
+		return textContent("配对请求已提交；发码方还需查询并语音确认后才会成为好友"), nil
+	case "list_pairing_requests":
+		requests, err := h.store.PendingPairings(userID)
+		if err != nil {
+			return toolResult{}, err
+		}
+		payload, _ := json.Marshal(requests)
+		return textContent(string(payload)), nil
+	case "confirm_friendship":
+		requestID, err := stringArg(args, "request_id")
+		if err != nil {
+			return toolResult{}, err
+		}
+		if err := h.store.ConfirmFriendship(userID, requestID); err != nil {
+			return toolResult{}, err
+		}
+		return textContent("好友双方已确认，配对成功"), nil
 	case "invite_member":
 		roomID, err := stringArg(args, "room_id")
 		if err != nil {

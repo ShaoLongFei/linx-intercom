@@ -24,6 +24,11 @@ type Room struct {
 	OwnerID string `json:"owner_id"`
 }
 
+type PairingRequest struct {
+	ID          string `json:"id"`
+	RequesterID string `json:"requester_id"`
+}
+
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -36,6 +41,7 @@ CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, device_id TEXT UNIQUE NOT
 CREATE TABLE IF NOT EXISTS rooms (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_id TEXT NOT NULL REFERENCES users(id));
 CREATE TABLE IF NOT EXISTS room_members (room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id), PRIMARY KEY(room_id, user_id));
 CREATE TABLE IF NOT EXISTS pair_codes (code TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS friend_pairings (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), requester_id TEXT NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS friendships (user_a TEXT NOT NULL REFERENCES users(id), user_b TEXT NOT NULL REFERENCES users(id), created_at INTEGER NOT NULL, PRIMARY KEY(user_a, user_b), CHECK(user_a < user_b));
 CREATE TABLE IF NOT EXISTS invitations (id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, inviter_id TEXT NOT NULL REFERENCES users(id), invitee_id TEXT NOT NULL REFERENCES users(id), status TEXT NOT NULL, created_at INTEGER NOT NULL);`); err != nil {
 		_ = db.Close()
@@ -191,31 +197,76 @@ func (s *Store) CreatePairCode(ownerID string, ttl time.Duration) (string, error
 	return code, nil
 }
 
-func (s *Store) AcceptPairCode(accepterID, code string) error {
+func (s *Store) AcceptPairCode(accepterID, code string) (string, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	var ownerID string
+	var expiresAt int64
+	err = tx.QueryRow(`SELECT owner_id, expires_at FROM pair_codes WHERE code = ? AND expires_at > ?`, code, time.Now().UnixMilli()).Scan(&ownerID, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && ownerID == accepterID) {
+		return "", ErrPairCodeInvalid
+	}
+	if err != nil {
+		return "", err
+	}
+	requestID := newID()
+	if _, err := tx.Exec(`INSERT INTO friend_pairings(id, owner_id, requester_id, expires_at) VALUES(?, ?, ?, ?)`, requestID, ownerID, accepterID, expiresAt); err != nil {
+		return "", fmt.Errorf("create pending friend pairing: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM pair_codes WHERE code = ?`, code); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return requestID, nil
+}
+
+func (s *Store) ConfirmFriendship(ownerID, requestID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var ownerID string
-	err = tx.QueryRow(`SELECT owner_id FROM pair_codes WHERE code = ? AND expires_at > ?`, code, time.Now().UnixMilli()).Scan(&ownerID)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && ownerID == accepterID) {
-		return ErrPairCodeInvalid
+	var requesterID string
+	err = tx.QueryRow(`SELECT requester_id FROM friend_pairings WHERE id = ? AND owner_id = ? AND expires_at > ?`, requestID, ownerID, time.Now().UnixMilli()).Scan(&requesterID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
 	}
 	if err != nil {
 		return err
 	}
-	a, b := ownerID, accepterID
+	a, b := ownerID, requesterID
 	if b < a {
 		a, b = b, a
 	}
-	if _, err := tx.Exec(`INSERT INTO friendships(user_a, user_b, created_at) VALUES(?, ?, ?)`, a, b, time.Now().Unix()); err != nil {
-		return fmt.Errorf("create friendship: %w", err)
+	if _, err := tx.Exec(`INSERT INTO friendships(user_a, user_b, created_at) VALUES(?, ?, ?)`, a, b, time.Now().UnixMilli()); err != nil {
+		return fmt.Errorf("confirm friendship: %w", err)
 	}
-	if _, err := tx.Exec(`DELETE FROM pair_codes WHERE code = ?`, code); err != nil {
+	if _, err := tx.Exec(`DELETE FROM friend_pairings WHERE id = ?`, requestID); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) PendingPairings(ownerID string) ([]PairingRequest, error) {
+	rows, err := s.db.Query(`SELECT id, requester_id FROM friend_pairings WHERE owner_id = ? AND expires_at > ? ORDER BY rowid`, ownerID, time.Now().UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var requests []PairingRequest
+	for rows.Next() {
+		var request PairingRequest
+		if err := rows.Scan(&request.ID, &request.RequesterID); err != nil {
+			return nil, err
+		}
+		requests = append(requests, request)
+	}
+	return requests, rows.Err()
 }
 
 func (s *Store) AreFriends(userA, userB string) bool {

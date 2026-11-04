@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"linx-intercom/server/internal/store"
 )
@@ -69,4 +70,66 @@ func TestMCPToolsListAndAuthorization(t *testing.T) {
 	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"name":"create_room"`)) {
 		t.Fatalf("tools/list response = %d %s", recorder.Code, recorder.Body)
 	}
+}
+
+func TestFriendPairingRequiresOwnerConfirmation(t *testing.T) {
+	db, err := store.Open(t.TempDir() + "/pairing.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	owner, _ := db.EnsureUser("pair-owner")
+	requester, _ := db.EnsureUser("pair-requester")
+	code, err := db.CreatePairCode(owner, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(db, nil, "mcp-secret")
+	callTool(t, handler, "pair-requester", "accept_friend", map[string]any{"code": code})
+	if db.AreFriends(owner, requester) {
+		t.Fatal("requester accepting code created friendship before owner confirmation")
+	}
+	requests, err := db.PendingPairings(owner)
+	if err != nil || len(requests) != 1 || requests[0].RequesterID != requester {
+		t.Fatalf("pending requests = %+v, %v", requests, err)
+	}
+	requestID := requests[0].ID
+	callTool(t, handler, "pair-owner", "confirm_friendship", map[string]any{"request_id": requestID})
+	if !db.AreFriends(owner, requester) {
+		t.Fatal("owner confirmation did not establish friendship")
+	}
+}
+
+func callTool(t *testing.T, handler http.Handler, deviceID, name string, args map[string]any) string {
+	t.Helper()
+	encoded, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": args}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/mcp/message", bytes.NewReader(encoded))
+	req.Header.Set("Authorization", "Bearer mcp-secret")
+	req.Header.Set("X-Linx-Device-Id", deviceID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tool %s HTTP status = %d: %s", name, rec.Code, rec.Body)
+	}
+	var response struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Result.IsError {
+		t.Fatalf("tool %s failed: %s", name, rec.Body)
+	}
+	if len(response.Result.Content) == 0 {
+		return ""
+	}
+	return response.Result.Content[0].Text
 }

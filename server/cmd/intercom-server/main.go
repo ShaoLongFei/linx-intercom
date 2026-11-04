@@ -53,6 +53,7 @@ func main() {
 		os.Exit(1)
 	}
 	sessions.SetOnCreate(func(session *device.Session) {
+		device.StartAudioRouting(session)
 		token := linxTokens[session.DeviceID]
 		if linxURL == "" || token == "" {
 			logger.Warn("Linx virtual device not configured", "device_id", session.DeviceID)

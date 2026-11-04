@@ -39,13 +39,23 @@ func TestPairingRequiresBothUsersAndConsumesOneTimeCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AcceptPairCode(b, code); err != nil {
+	requestID, err := db.AcceptPairCode(b, code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db.AreFriends(a, b) {
+		t.Fatal("pairing code submission created friendship before owner confirmation")
+	}
+	if err := db.ConfirmFriendship(b, requestID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("requester confirmation error = %v, want ErrNotFound", err)
+	}
+	if err := db.ConfirmFriendship(a, requestID); err != nil {
 		t.Fatal(err)
 	}
 	if !db.AreFriends(a, b) {
 		t.Fatal("friendship missing after both users confirmed pairing")
 	}
-	if err := db.AcceptPairCode(b, code); !errors.Is(err, ErrPairCodeInvalid) {
+	if _, err := db.AcceptPairCode(b, code); !errors.Is(err, ErrPairCodeInvalid) {
 		t.Fatalf("reused pair code error = %v, want ErrPairCodeInvalid", err)
 	}
 }
@@ -60,7 +70,7 @@ func TestPairingCodeExpires(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(2 * time.Millisecond)
-	if err := db.AcceptPairCode(b, code); !errors.Is(err, ErrPairCodeInvalid) {
+	if _, err := db.AcceptPairCode(b, code); !errors.Is(err, ErrPairCodeInvalid) {
 		t.Fatalf("expired code error = %v, want ErrPairCodeInvalid", err)
 	}
 }
@@ -74,7 +84,11 @@ func TestRoomInviteRequiresOnlineFriendAndInviteeAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AcceptPairCode(friend, code); err != nil {
+	requestID, err := db.AcceptPairCode(friend, code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ConfirmFriendship(owner, requestID); err != nil {
 		t.Fatal(err)
 	}
 	roomID, err := db.CreateRoom(owner, "Workshop")

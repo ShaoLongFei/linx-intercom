@@ -9,7 +9,7 @@ ESP32-S3 语音对讲设备及其服务端。目标功能包括语音创建房�
 - 实时媒体：Janus Gateway AudioBridge 负责房间混音。
 - 灵矽：虚拟设备通过 WebSocket 接入灵矽；云端 MCP 提供房间和好友工具。
 
-当前已实现健康检查、设备认证 WebSocket、音频/控制帧收发、会话重连和 Linux 虚拟设备模拟器。灵矽、Janus、业务工具和 ESP32 硬件链路仍在开发中。
+当前已实现健康检查、设备认证 WebSocket、音频/控制帧收发、会话重连、Linux 虚拟设备模拟器、SQLite 房间/好友数据、灵矽 WebSocket/MCP 工具和 Janus WebRTC 音频端点。服务端唤醒词模型尚未选择；动态 Janus 房间与 MCP 入房流程、ESP32 BluFi/I2S 链路仍在开发中，尚未完成端到端对讲。
 
 ## 后端
 
