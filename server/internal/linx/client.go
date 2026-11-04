@@ -19,8 +19,9 @@ type Client struct {
 }
 
 type protocolMessage struct {
-	Type      string `json:"type"`
-	Transport string `json:"transport,omitempty"`
+	Type        string      `json:"type"`
+	Transport   string      `json:"transport,omitempty"`
+	AudioParams audioParams `json:"audio_params"`
 }
 
 func (c Client) Run(ctx context.Context, deviceID string, audioIn <-chan []byte, audioOut chan<- []byte, eventsIn <-chan json.RawMessage, eventsOut chan<- json.RawMessage) error {
@@ -62,7 +63,8 @@ func (c Client) Run(ctx context.Context, deviceID string, audioIn <-chan []byte,
 		params["sample_format"] = "signed_int16"
 	}
 	hello, _ := json.Marshal(map[string]any{
-		"type": "hello", "version": 1, "features": map[string]bool{"mcp": true}, "transport": "websocket", "audio_params": params,
+		// 业务工具通过云端 MCP 提供；这里没有设备侧 MCP RPC，不声明端侧 mcp 能力。
+		"type": "hello", "version": 1, "transport": "websocket", "audio_params": params,
 	})
 	if err := conn.Write(ctx, websocket.MessageText, hello); err != nil {
 		return fmt.Errorf("send Linx hello: %w", err)
@@ -75,7 +77,11 @@ func (c Client) Run(ctx context.Context, deviceID string, audioIn <-chan []byte,
 	if messageType != websocket.MessageText || json.Unmarshal(payload, &helloResponse) != nil || helloResponse.Type != "hello" || helloResponse.Transport != "websocket" {
 		return errors.New("invalid Linx hello response")
 	}
-	slog.Info("Linx virtual device connected", "device_id", deviceID)
+	decoder, err := newDownlinkDecoder(helloResponse.AudioParams)
+	if err != nil {
+		return err
+	}
+	slog.Info("Linx virtual device connected", "device_id", deviceID, "tts_format", decoder.format, "device_pcm_sample_rate", 16000, "device_pcm_frame_ms", 20)
 
 	writeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -98,12 +104,19 @@ func (c Client) Run(ctx context.Context, deviceID string, audioIn <-chan []byte,
 		}
 		switch messageType {
 		case websocket.MessageBinary:
-			select {
-			case audioOut <- append([]byte(nil), payload...):
-			case <-ctx.Done():
-				return nil
-			default:
-				slog.Warn("Linx TTS queue full; dropping stale audio", "device_id", deviceID)
+			frames, err := decoder.decode(payload)
+			if err != nil {
+				slog.Warn("Linx TTS decode failed", "device_id", deviceID, "format", decoder.format, "packet_bytes", len(payload), "error", err)
+				return err
+			}
+			for _, frame := range frames {
+				select {
+				case audioOut <- frame:
+				case <-ctx.Done():
+					return nil
+				default:
+					slog.Warn("Linx TTS queue full; dropping audio frame", "device_id", deviceID)
+				}
 			}
 		case websocket.MessageText:
 			select {

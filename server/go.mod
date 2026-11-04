@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/coder/websocket v1.8.13
+	github.com/pion/opus v0.1.0
 	github.com/pion/webrtc/v4 v4.1.6
 	modernc.org/sqlite v1.39.1
 )

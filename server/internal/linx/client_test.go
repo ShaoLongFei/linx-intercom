@@ -2,6 +2,7 @@ package linx
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,11 @@ import (
 )
 
 func TestClientAuthenticatesNegotiatesAndRoutesAudio(t *testing.T) {
+	// FFmpeg/libopus 生成的 440 Hz 合成音，24 kHz mono / 20 ms；没有用户录音。
+	opusPacket, err := base64.StdEncoding.DecodeString("aIICsDXtEa4Hiu5g6R4d385gDeJLmQ0Pw3kC8PgaMl5qWLDEO490pQ==")
+	if err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer linx-secret" || r.Header.Get("Device-Id") != "virtual-device-a" || r.Header.Get("Client-Id") != "linx-client-a" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -23,14 +29,22 @@ func TestClientAuthenticatesNegotiatesAndRoutesAudio(t *testing.T) {
 			return
 		}
 		defer conn.CloseNow()
-		_, _, _ = conn.Read(r.Context())
-		_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"hello","transport":"websocket","session_id":"linx-session"}`))
+		_, hello, err := conn.Read(r.Context())
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if strings.Contains(string(hello), `"mcp":true`) {
+			t.Error("advertised device MCP support without implementing its initialization/tools protocol")
+			return
+		}
+		_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"hello","transport":"websocket","session_id":"linx-session","audio_params":{"format":"opus","sample_rate":24000,"channels":1,"frame_duration":20}}`))
 		messageType, audio, err := conn.Read(r.Context())
 		if err != nil || messageType != websocket.MessageBinary || string(audio) != "spoken command" {
 			t.Errorf("received audio = (%v, %q, %v)", messageType, audio, err)
 			return
 		}
-		_ = conn.Write(r.Context(), websocket.MessageBinary, []byte("tts audio"))
+		_ = conn.Write(r.Context(), websocket.MessageBinary, opusPacket)
 		_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"tts","state":"stop","is_aborted":false}`))
 		<-r.Context().Done()
 	}))
@@ -46,8 +60,8 @@ func TestClientAuthenticatesNegotiatesAndRoutesAudio(t *testing.T) {
 	go func() { result <- client.Run(ctx, "virtual-device-a", audioIn, audioOut, eventsIn, eventsOut) }()
 	select {
 	case audio := <-audioOut:
-		if got := string(audio); got != "tts audio" {
-			t.Fatalf("TTS audio = %q", got)
+		if len(audio) != 640 {
+			t.Fatalf("decoded device PCM frame bytes = %d, want 640", len(audio))
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for TTS audio")
