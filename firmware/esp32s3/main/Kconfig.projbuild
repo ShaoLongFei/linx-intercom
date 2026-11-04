@@ -1,0 +1,53 @@
+menu "Linx Intercom"
+
+config INTERCOM_DEVICE_TOKEN
+    string "Backend device bearer token"
+    default ""
+    help
+        Per-device token registered in the Go backend. Keep sdkconfig local and never commit it.
+
+config INTERCOM_BACKEND_URI
+    string "Go backend WebSocket URI"
+    default "wss://intercom.example.com/device/ws"
+
+config INTERCOM_I2S_BCLK_GPIO
+    int "I2S bit clock GPIO"
+    range 0 48
+    default 5
+
+config INTERCOM_I2S_WS_GPIO
+    int "I2S word select GPIO"
+    range 0 48
+    default 6
+
+config INTERCOM_I2S_DOUT_GPIO
+    int "I2S codec DAC data GPIO"
+    range 0 48
+    default 7
+
+config INTERCOM_I2S_DIN_GPIO
+    int "I2S codec ADC data GPIO"
+    range 0 48
+    default 4
+
+config INTERCOM_I2S_MCLK_GPIO
+    int "I2S master clock GPIO (-1 when unused)"
+    range -1 48
+    default -1
+
+config INTERCOM_AUDIO_AMPLIFIER_GPIO
+    int "Audio amplifier enable GPIO (-1 when unused)"
+    range -1 48
+    default -1
+
+config INTERCOM_AUDIO_AMPLIFIER_ACTIVE_LEVEL
+    int "Audio amplifier enable active level"
+    range 0 1
+    default 1
+
+config INTERCOM_RESET_BUTTON_GPIO
+    int "Hold-to-reset Wi-Fi provisioning button GPIO (-1 disables it)"
+    range -1 48
+    default -1
+
+endmenu
