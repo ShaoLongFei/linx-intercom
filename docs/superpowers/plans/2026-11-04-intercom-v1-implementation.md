@@ -4,9 +4,9 @@
 
 **Goal:** Deliver a testable first version of the ESP32 intercom with per-device voice sessions, Linx semantic control, Janus rooms, BluFi provisioning, and voice-driven friend/room operations.
 
-**Architecture:** ESP32 exchanges audio and control events with Go over one authenticated persistent WebSocket. Go owns the per-device session, server-side wake-word routing, Linx WebSocket client, business APIs/MCP tools, and a Pion WebRTC endpoint connected to Janus AudioBridge. Room audio and Linx TTS are selected as the single device downlink source according to session mode.
+**Architecture:** ESP32 exchanges audio and control events with Go over one authenticated persistent WebSocket. Go owns the per-device session, server-side wake-word routing, Linx WebSocket client, MCP tools, and a Pion WebRTC endpoint connected to Janus AudioBridge. The current device transport is PCM16 mono 16 kHz; the media endpoint converts it to PCMU 8 kHz for Janus. Room audio and Linx TTS are selected as the single device downlink source according to session mode.
 
-**Tech Stack:** Go 1.26, `net/http`, SQLite, Pion WebRTC, ESP-IDF for ESP32-S3, ESP-IDF BluFi, Linx WebSocket/MCP protocols, Janus AudioBridge.
+**Tech Stack:** Go 1.26, `net/http`, SQLite, Pion WebRTC, PCMU/G.711, ESP-IDF for ESP32-S3, ESP-IDF BluFi, Linx WebSocket/MCP protocols, Janus AudioBridge.
 
 **Spec:** `docs/superpowers/specs/2026-11-04-intercom-v1-design.md`
 
@@ -14,6 +14,7 @@
 
 - One ESP32 maps to one stable user identity and one isolated virtual Linx identity/session.
 - The initial disconnect grace period is 60 seconds; reconnect during the grace period resumes the device session, and stale audio is discarded.
+- Janus AudioBridge media uses PCMU/8 kHz; server resamples/compands 16 kHz device PCM16 and expands downlink samples back to device-rate PCM.
 - Linx control mode pauses Janus microphone publishing and room downlink playback; Linx TTS becomes the device downlink until control completes.
 - Invitations are accepted only for online devices; offline invitations fail immediately.
 - BluFi is the only v1 provisioning path; validate phone-side support for custom devices before promising a ready-made app flow.
@@ -111,7 +112,8 @@
 - [ ] Add protocol tests with a fake Janus signaling peer for join, publish, subscribe, disconnect, and cleanup failures.
 - [ ] Implement Pion WebRTC negotiation and Janus AudioBridge signaling; keep credentials and room secrets in environment variables.
 - [ ] Implement single-source downlink selection so Janus mix is suppressed whenever Linx control/TTS owns playback.
-- [ ] Run media tests and a local Janus compose smoke test with two Linux simulators; verify each hears the other's audio and neither receives its own mix.
+- [ ] Run media tests with an in-process fake Janus WebSocket/WebRTC peer; verify PCMU uplink RTP, room-mix PCM downlink, leave/destroy cleanup, and failed signaling.
+- [ ] When a Janus image is available, run a local Janus compose smoke test with two Linux simulators; verify each hears the other's audio and neither receives its own mix.
 - [ ] Document firewall ports, TURN/STUN configuration points, health checks, and teardown behavior.
 
 ### Task 5: Wake-word detection and routing state machine

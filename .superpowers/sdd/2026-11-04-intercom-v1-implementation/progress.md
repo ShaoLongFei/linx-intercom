@@ -14,4 +14,10 @@
 - Task 1: in progress. BASE `b8c763c`.
 Task 1: complete (commits b8c763c..b8c763c, tests: go test ./... → ok  	linx-intercom/server/internal/device	0.028s)
 Task 2: complete (commits 7c87c10..7c87c10, tests: sh -c 'cd server && go test ./... && go vet ./... && cd .. && git diff --check' → ok  	linx-intercom/server/internal/device	0.028s)
+- Task 3: complete (commit 9e7b3d5; race tests, vet, and local health/MCP authorization smoke checks passed).
+- Task 4: complete (Pion audio RTP and fake Janus WebSocket/WebRTC tests, race suite, vet, Compose config check passed).
+- Task 4: Ruling: use PCMU/8 kHz for Janus and pure-Go companding/resampling — device transport is PCM16 16 kHz and no portable pure-Go Opus encoder was available; this keeps deployment CGO-free at the cost of narrowband voice quality.
+- Task 4: External check: Janus image pull/real container smoke test not run because registry network access failed in this environment; retry where the image can be pulled.
+- Task 5: pending wake phrase/model choice is still an external product input; implement routing state machine with a deterministic detector seam, but do not claim wake-word detection itself is complete without a supported model and samples.
 Task 3: complete (commits 6cf8554..6cf8554, tests: sh -c 'cd server && go test ./... && go vet ./... && cd .. && git diff --check' → ok  	linx-intercom/server/internal/store	(cached))
+Task 4: complete (commits 9e7b3d5..9e7b3d5, tests: sh -c 'cd server && go test ./... && go vet ./... && cd .. && docker compose -f deploy/janus-compose.yaml config >/dev/null && git diff --check' → ok  	linx-intercom/server/internal/store	(cached))

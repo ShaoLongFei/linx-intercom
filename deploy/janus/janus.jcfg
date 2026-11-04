@@ -1,0 +1,25 @@
+general: {
+  configs_folder = "/usr/local/etc/janus"
+  plugins_folder = "/usr/local/lib/janus/plugins"
+  transports_folder = "/usr/local/lib/janus/transports"
+  events_folder = "/usr/local/lib/janus/events"
+  log_to_stdout = true
+  debug_level = 4
+}
+
+certificates: {
+  cert_pem = ""
+  cert_key = ""
+}
+
+plugins: {
+  disable = ""
+}
+
+transports: {
+  disable = ""
+}
+
+media: {
+  rtp_port_range = "10000-10100"
+}
