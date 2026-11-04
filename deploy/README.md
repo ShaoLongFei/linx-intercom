@@ -12,6 +12,8 @@ bash deploy/smoke-test.sh
 
 ## Janus AudioBridge
 
+当前 Compose 使用 Docker Hub 上可用的 `canyan/janus-gateway:1.1.4`，镜像仅提供 `linux/amd64`。该镜像 README 的配置示例采用单文件挂载；不要覆盖整个 `/usr/local/etc/janus` 目录。
+
 本地启动独立 Janus 媒体服务：
 
 ```sh
