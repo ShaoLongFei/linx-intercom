@@ -335,7 +335,7 @@ void blufi_event_callback(esp_blufi_cb_event_t event, esp_blufi_cb_param_t *para
         break;
     case ESP_BLUFI_EVENT_REPORT_ERROR:
         ESP_LOGW(TAG, "BluFi peer reported protocol error; code=%d", param->report_error.state);
-        (void)esp_blufi_send_error_info(param->report_error.state);
+        // 这是手机端报告给设备的错误，只记录，避免把同一错误再次回发。
         break;
     case ESP_BLUFI_EVENT_RECV_SLAVE_DISCONNECT_BLE:
         ESP_LOGI(TAG, "phone requested BluFi disconnect");
