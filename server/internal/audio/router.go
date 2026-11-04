@@ -29,7 +29,6 @@ type Router struct {
 	roomAudio     chan []byte
 	linxAudio     chan []byte
 	janusDownlink chan []byte
-	linxDownlink  chan []byte
 	closeOnce     sync.Once
 }
 
@@ -46,7 +45,6 @@ func NewRouter(detector WakeWordDetector, lookbackFrames int) *Router {
 		roomAudio:     make(chan []byte, 32),
 		linxAudio:     make(chan []byte, 32),
 		janusDownlink: make(chan []byte, 32),
-		linxDownlink:  make(chan []byte, 32),
 	}
 }
 
@@ -92,7 +90,6 @@ func (r *Router) CompleteControl() bool {
 	r.mode = ModeRoom
 	r.buffer = nil
 	clearQueue(r.janusDownlink)
-	clearQueue(r.linxDownlink)
 	slog.Info("voice route changed", "mode", "room", "reason", "control_complete")
 	return true
 }
@@ -106,21 +103,12 @@ func (r *Router) Mode() Mode {
 func (r *Router) RoomAudio() <-chan []byte     { return r.roomAudio }
 func (r *Router) LinxAudio() <-chan []byte     { return r.linxAudio }
 func (r *Router) JanusDownlink() <-chan []byte { return r.janusDownlink }
-func (r *Router) LinxDownlink() <-chan []byte  { return r.linxDownlink }
 
 func (r *Router) EnqueueJanusDownlink(frame []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.mode == ModeRoom {
 		r.enqueue(r.janusDownlink, frame, "device room downlink")
-	}
-}
-
-func (r *Router) EnqueueLinxDownlink(frame []byte) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.mode == ModeControl {
-		r.enqueue(r.linxDownlink, frame, "device Linx downlink")
 	}
 }
 

@@ -18,13 +18,19 @@ type Client struct {
 	AudioFormat string
 }
 
+// 二进制音频与状态事件共用一条队列，保持 WebSocket 接收顺序。
+type Result struct {
+	Audio []byte
+	Event json.RawMessage
+}
+
 type protocolMessage struct {
 	Type        string      `json:"type"`
 	Transport   string      `json:"transport,omitempty"`
 	AudioParams audioParams `json:"audio_params"`
 }
 
-func (c Client) Run(ctx context.Context, deviceID string, audioIn <-chan []byte, audioOut chan<- []byte, eventsIn <-chan json.RawMessage, eventsOut chan<- json.RawMessage) error {
+func (c Client) Run(ctx context.Context, deviceID string, audioIn <-chan []byte, eventsIn <-chan json.RawMessage, results chan<- Result) error {
 	if c.URL == "" || c.Token == "" || deviceID == "" {
 		return errors.New("Linx URL, token, and device ID are required")
 	}
@@ -111,20 +117,16 @@ func (c Client) Run(ctx context.Context, deviceID string, audioIn <-chan []byte,
 			}
 			for _, frame := range frames {
 				select {
-				case audioOut <- frame:
+				case results <- Result{Audio: frame}:
 				case <-ctx.Done():
 					return nil
-				default:
-					slog.Warn("Linx TTS queue full; dropping audio frame", "device_id", deviceID)
 				}
 			}
 		case websocket.MessageText:
 			select {
-			case eventsOut <- append(json.RawMessage(nil), payload...):
+			case results <- Result{Event: append(json.RawMessage(nil), payload...)}:
 			case <-ctx.Done():
 				return nil
-			default:
-				slog.Warn("Linx event queue full", "device_id", deviceID)
 			}
 		}
 	}

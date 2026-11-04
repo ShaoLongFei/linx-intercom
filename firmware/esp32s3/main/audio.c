@@ -144,3 +144,13 @@ void audio_play_frame(const uint8_t *pcm, size_t size)
         ESP_LOGW(TAG, "speaker queue full; oldest audio frame dropped");
     }
 }
+
+void audio_clear_playback(void)
+{
+    if (s_play_queue != NULL) {
+        // 正常 TTS 结束必须保留尾音；只有切入控制模式或明确打断时清理待播放帧。
+        UBaseType_t pending = uxQueueMessagesWaiting(s_play_queue);
+        xQueueReset(s_play_queue);
+        ESP_LOGI(TAG, "speaker playback queue cleared; pending_frames=%u", (unsigned)pending);
+    }
+}

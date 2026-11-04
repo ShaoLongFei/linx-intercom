@@ -289,10 +289,10 @@ func TestSessionAudioQueueDropsOldestFrame(t *testing.T) {
 	if !session.EnqueueAudioOut([]byte("three")) {
 		t.Fatal("enqueue should report stale frame drop")
 	}
-	if got := string(<-session.AudioOut); got != "two" {
+	if got := string((<-session.AudioOut).audio); got != "two" {
 		t.Fatalf("first queued frame = %q, want newest retained frame %q", got, "two")
 	}
-	if got := string(<-session.AudioOut); got != "three" {
+	if got := string((<-session.AudioOut).audio); got != "three" {
 		t.Fatalf("second queued frame = %q, want %q", got, "three")
 	}
 }

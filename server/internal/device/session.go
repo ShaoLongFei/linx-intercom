@@ -11,6 +11,7 @@ import (
 
 	"github.com/coder/websocket"
 	"linx-intercom/server/internal/audio"
+	"linx-intercom/server/internal/linx"
 )
 
 const sessionQueueSize = 32
@@ -24,17 +25,16 @@ type Session struct {
 	UserID       string
 	LinxClientID string
 
-	AudioIn       chan []byte
-	JanusAudioIn  chan []byte
-	AudioOut      chan []byte
-	ControlIn     chan ControlMessage
-	ControlOut    chan ControlMessage
-	LinxAudioIn   chan []byte
-	LinxAudioOut  chan []byte
-	LinxEventsIn  chan json.RawMessage
-	LinxEventsOut chan json.RawMessage
-	AudioRouter   *audio.Router
-	Done          <-chan struct{}
+	AudioIn      chan []byte
+	JanusAudioIn chan []byte
+	AudioOut     chan downlinkMessage
+	ControlIn    chan ControlMessage
+	ControlOut   chan ControlMessage
+	LinxAudioIn  chan []byte
+	LinxEventsIn chan json.RawMessage
+	LinxOut      chan linx.Result
+	AudioRouter  *audio.Router
+	Done         <-chan struct{}
 
 	mu          sync.Mutex
 	conn        *websocket.Conn
@@ -49,21 +49,20 @@ type Session struct {
 func newSession(deviceID, userID string, queueSize int) *Session {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Session{
-		ID:            newID(),
-		DeviceID:      deviceID,
-		UserID:        userID,
-		AudioIn:       make(chan []byte, queueSize),
-		JanusAudioIn:  make(chan []byte, queueSize),
-		AudioOut:      make(chan []byte, queueSize),
-		ControlIn:     make(chan ControlMessage, queueSize),
-		ControlOut:    make(chan ControlMessage, queueSize),
-		LinxAudioIn:   make(chan []byte, queueSize),
-		LinxAudioOut:  make(chan []byte, queueSize),
-		LinxEventsIn:  make(chan json.RawMessage, queueSize),
-		LinxEventsOut: make(chan json.RawMessage, queueSize),
-		AudioRouter:   audio.NewRouter(audio.DisabledDetector{}, 15),
-		Done:          ctx.Done(),
-		cancel:        cancel,
+		ID:           newID(),
+		DeviceID:     deviceID,
+		UserID:       userID,
+		AudioIn:      make(chan []byte, queueSize),
+		JanusAudioIn: make(chan []byte, queueSize),
+		AudioOut:     make(chan downlinkMessage, queueSize),
+		ControlIn:    make(chan ControlMessage, queueSize),
+		ControlOut:   make(chan ControlMessage, queueSize),
+		LinxAudioIn:  make(chan []byte, queueSize),
+		LinxEventsIn: make(chan json.RawMessage, queueSize),
+		LinxOut:      make(chan linx.Result, queueSize),
+		AudioRouter:  audio.NewRouter(audio.DisabledDetector{}, 15),
+		Done:         ctx.Done(),
+		cancel:       cancel,
 	}
 }
 
@@ -76,7 +75,14 @@ func (s *Session) EnqueueAudioIn(frame []byte) bool {
 }
 
 func (s *Session) EnqueueAudioOut(frame []byte) bool {
-	return enqueueAudio(s.AudioOut, frame)
+	return enqueueLatest(s.AudioOut, downlinkMessage{audio: append([]byte(nil), frame...), mode: audio.ModeRoom})
+}
+
+// 正常 TTS stop 作为队尾标记随音频发送，避免另一条控制队列提前结束播放。
+type downlinkMessage struct {
+	audio []byte
+	event *ControlMessage
+	mode  audio.Mode
 }
 
 func (s *Session) ConnectionGeneration() uint64 {
@@ -86,10 +92,13 @@ func (s *Session) ConnectionGeneration() uint64 {
 }
 
 func enqueueAudio(queue chan []byte, frame []byte) bool {
-	copyOfFrame := append([]byte(nil), frame...)
+	return enqueueLatest(queue, append([]byte(nil), frame...))
+}
+
+func enqueueLatest[T any](queue chan T, frame T) bool {
 	dropped := false
 	select {
-	case queue <- copyOfFrame:
+	case queue <- frame:
 		return false
 	default:
 	}
@@ -99,7 +108,7 @@ func enqueueAudio(queue chan []byte, frame []byte) bool {
 	default:
 	}
 	select {
-	case queue <- copyOfFrame:
+	case queue <- frame:
 	default:
 		dropped = true
 	}
@@ -237,9 +246,8 @@ func (m *SessionManager) Attach(deviceID string, conn *websocket.Conn) (*Session
 		clearQueue(session.ControlIn)
 		clearQueue(session.ControlOut)
 		clearQueue(session.LinxAudioIn)
-		clearQueue(session.LinxAudioOut)
 		clearQueue(session.LinxEventsIn)
-		clearQueue(session.LinxEventsOut)
+		clearQueue(session.LinxOut)
 		m.logger.Info("device session resumed; stale queues cleared", "device_id", deviceID, "session_id", session.ID)
 	}
 	if session.conn != nil && session.conn != conn {

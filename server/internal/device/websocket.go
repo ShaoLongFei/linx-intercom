@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/coder/websocket"
@@ -117,21 +118,50 @@ func writeMessages(ctx context.Context, session *Session, conn *websocket.Conn) 
 			return
 		case <-session.Done:
 			return
-		case frame := <-session.AudioOut:
-			if err := conn.Write(ctx, websocket.MessageBinary, frame); err != nil {
+		case message := <-session.AudioOut:
+			if message.mode != session.AudioRouter.Mode() {
+				continue
+			}
+			if message.event != nil {
+				if err := writeControl(ctx, session, conn, *message.event); err != nil {
+					return
+				}
+				if message.event.Type == "tts" && message.event.State == "stop" {
+					completeControl(session, "tts_drained")
+				}
+				continue
+			}
+			if err := conn.Write(ctx, websocket.MessageBinary, message.audio); err != nil {
 				slog.Warn("device audio downlink failed", "device_id", session.DeviceID, "session_id", session.ID, "error", err)
 				return
 			}
-		case message := <-session.ControlOut:
-			payload, err := json.Marshal(message)
-			if err != nil {
-				slog.Error("device control encode failed", "device_id", session.DeviceID, "session_id", session.ID, "error", err)
-				continue
+			// 云端 TTS 可能突发返回整句，按设备 20 ms 播放节奏发送，避免挤爆 ESP32 队列。
+			timer := time.NewTimer(20 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-session.Done:
+				timer.Stop()
+				return
+			case <-timer.C:
 			}
-			if err := conn.Write(ctx, websocket.MessageText, payload); err != nil {
-				slog.Warn("device control downlink failed", "device_id", session.DeviceID, "session_id", session.ID, "error", err)
+		case message := <-session.ControlOut:
+			if err := writeControl(ctx, session, conn, message); err != nil {
 				return
 			}
 		}
 	}
+}
+
+func writeControl(ctx context.Context, session *Session, conn *websocket.Conn, message ControlMessage) error {
+	payload, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+	if err := conn.Write(ctx, websocket.MessageText, payload); err != nil {
+		slog.Warn("device control downlink failed", "device_id", session.DeviceID, "session_id", session.ID, "error", err)
+		return err
+	}
+	return nil
 }

@@ -17,6 +17,7 @@ type ControlMessage struct {
 	RequestID string `json:"request_id,omitempty"`
 	RoomID    string `json:"room_id,omitempty"`
 	Text      string `json:"text,omitempty"`
+	IsAborted bool   `json:"is_aborted,omitempty"`
 }
 
 func decodeControl(data []byte) (ControlMessage, error) {

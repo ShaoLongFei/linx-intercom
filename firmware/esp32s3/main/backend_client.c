@@ -21,7 +21,7 @@ static char s_headers[256];
 static uint8_t s_rx_frame[BACKEND_MAX_FRAME_BYTES];
 static int s_rx_frame_size;
 
-static void log_control_event(const char *payload, int size)
+static void handle_control_event(const char *payload, int size)
 {
     cJSON *root = cJSON_ParseWithLength(payload, (size_t)size);
     if (root == NULL) {
@@ -31,6 +31,14 @@ static void log_control_event(const char *payload, int size)
     const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
     const cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "state");
     const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
+    const cJSON *aborted = cJSON_GetObjectItemCaseSensitive(root, "is_aborted");
+    if (cJSON_IsString(type) &&
+        ((strcmp(type->valuestring, "mode") == 0 && cJSON_IsString(mode) &&
+          strcmp(mode->valuestring, "control") == 0) ||
+         (strcmp(type->valuestring, "tts") == 0 && cJSON_IsString(state) &&
+          strcmp(state->valuestring, "stop") == 0 && cJSON_IsTrue(aborted)))) {
+        audio_clear_playback();
+    }
     ESP_LOGI(TAG, "control event received; type=%s state=%s mode=%s",
              cJSON_IsString(type) ? type->valuestring : "unknown",
              cJSON_IsString(state) ? state->valuestring : "",
@@ -81,7 +89,7 @@ static void on_websocket_event(void *arg, esp_event_base_t base, int32_t event_i
             if (event->op_code == 0x2) {
                 audio_play_frame(s_rx_frame, (size_t)s_rx_frame_size);
             } else if (event->op_code == 0x1) {
-                log_control_event((const char *)s_rx_frame, s_rx_frame_size);
+                handle_control_event((const char *)s_rx_frame, s_rx_frame_size);
             }
             s_rx_frame_size = 0;
         }

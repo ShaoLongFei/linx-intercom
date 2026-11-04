@@ -50,26 +50,25 @@ func TestClientAuthenticatesNegotiatesAndRoutesAudio(t *testing.T) {
 	}))
 	defer server.Close()
 	audioIn := make(chan []byte, 1)
-	audioOut := make(chan []byte, 1)
 	eventsIn := make(chan json.RawMessage)
-	eventsOut := make(chan json.RawMessage, 1)
+	results := make(chan Result, 1)
 	audioIn <- []byte("spoken command")
 	ctx, cancel := context.WithCancel(context.Background())
 	client := Client{URL: "ws" + strings.TrimPrefix(server.URL, "http"), Token: "linx-secret", ClientID: "linx-client-a"}
 	result := make(chan error, 1)
-	go func() { result <- client.Run(ctx, "virtual-device-a", audioIn, audioOut, eventsIn, eventsOut) }()
+	go func() { result <- client.Run(ctx, "virtual-device-a", audioIn, eventsIn, results) }()
 	select {
-	case audio := <-audioOut:
-		if len(audio) != 640 {
-			t.Fatalf("decoded device PCM frame bytes = %d, want 640", len(audio))
+	case output := <-results:
+		if len(output.Audio) != 640 {
+			t.Fatalf("decoded device PCM frame bytes = %d, want 640", len(output.Audio))
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for TTS audio")
 	}
 	var event map[string]any
 	select {
-	case raw := <-eventsOut:
-		if err := json.Unmarshal(raw, &event); err != nil || event["type"] != "tts" {
+	case output := <-results:
+		if err := json.Unmarshal(output.Event, &event); err != nil || event["type"] != "tts" {
 			t.Fatalf("TTS event = %v, %v", event, err)
 		}
 	case <-time.After(time.Second):
@@ -87,7 +86,7 @@ func TestClientSurfacesAuthenticationFailure(t *testing.T) {
 	}))
 	defer server.Close()
 	client := Client{URL: "ws" + strings.TrimPrefix(server.URL, "http"), Token: "bad"}
-	err := client.Run(context.Background(), "device-a", make(chan []byte), make(chan []byte), make(chan json.RawMessage), make(chan json.RawMessage))
+	err := client.Run(context.Background(), "device-a", make(chan []byte), make(chan json.RawMessage), make(chan Result))
 	if err == nil {
 		t.Fatal("authentication failure was ignored")
 	}
@@ -117,7 +116,7 @@ func TestClientCanNegotiateOpusInput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	client := Client{URL: "ws" + strings.TrimPrefix(server.URL, "http"), Token: "secret", AudioFormat: "opus"}
-	if err := client.Run(ctx, "device-opus", input, make(chan []byte), nil, make(chan json.RawMessage)); err == nil {
+	if err := client.Run(ctx, "device-opus", input, nil, make(chan Result)); err == nil {
 		t.Fatal("unexpected clean close after server ends the negotiated session")
 	}
 }
