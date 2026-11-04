@@ -60,6 +60,7 @@ func TestSimulatorStreamsAndReconnects(t *testing.T) {
 	deadline := time.After(2 * time.Second)
 	var initialGeneration uint64
 	reconnected := false
+	observedOffline := false
 	audioFrames := 0
 	for {
 		select {
@@ -73,6 +74,9 @@ func TestSimulatorStreamsAndReconnects(t *testing.T) {
 			if !reconnected {
 				t.Fatal("simulator did not establish a second connection")
 			}
+			if !observedOffline {
+				t.Fatal("simulator replaced a connected socket without an offline interval")
+			}
 			if audioFrames == 0 {
 				t.Fatal("simulator did not send any binary audio frames")
 			}
@@ -81,6 +85,9 @@ func TestSimulatorStreamsAndReconnects(t *testing.T) {
 			t.Fatal("simulator did not finish audio and reconnect")
 		case <-time.After(time.Millisecond):
 			if session := manager.Current("sim-device"); session != nil {
+				if initialGeneration != 0 && !reconnected && !manager.IsUserOnline(session.UserID) {
+					observedOffline = true
+				}
 				select {
 				case <-session.AudioIn:
 					audioFrames++

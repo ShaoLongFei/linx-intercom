@@ -1,5 +1,15 @@
 # 部署
 
+## 本地 Smoke Test
+
+已安装 Docker Compose、Go 和 Python 3 后，在仓库根目录运行：
+
+```sh
+bash deploy/smoke-test.sh
+```
+
+脚本会启动独立命名的 Compose 项目，检查 `/healthz`，生成短 WAV 并通过 Linux 模拟器验证设备鉴权、音频上传和 60 秒宽限期内重连，再检查 SIGTERM 正常退出，结束后删除该 smoke 项目的容器及数据卷。它只读取 `deploy/server.env.example`，覆盖为临时测试身份，禁用真实灵矽账号和 KWS 模型。可通过 `INTERCOM_SMOKE_HTTP_PORT`、`JANUS_SMOKE_HTTP_PORT` 和 `JANUS_SMOKE_WS_PORT` 更改测试端口；Janus 的 UDP 10000–10100 仍需空闲。
+
 ## Janus AudioBridge
 
 本地启动独立 Janus 媒体服务：

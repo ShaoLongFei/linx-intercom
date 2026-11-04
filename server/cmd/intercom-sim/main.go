@@ -149,7 +149,13 @@ func run(ctx context.Context, serverURL, deviceID, token string, pcm []byte, rec
 		_ = conn.CloseNow()
 		<-receiveDone
 		if reconnect {
-			slog.Info("simulator reconnecting", "device_id", deviceID, "audio_offset_bytes", offset)
+			// 留出可观测的离线间隔，让服务端进入宽限期，避免只测试到在线连接替换。
+			slog.Info("simulator reconnecting", "device_id", deviceID, "audio_offset_bytes", offset, "offline_ms", 200)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(200 * time.Millisecond):
+			}
 		}
 	}
 	slog.Info("simulator audio input complete", "device_id", deviceID, "audio_bytes", len(pcm), "downlink_file", outputPath)
