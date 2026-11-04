@@ -12,7 +12,7 @@ bash deploy/smoke-test.sh
 
 ## Janus AudioBridge
 
-当前 Compose 使用 Docker Hub 上可用的 `canyan/janus-gateway:1.1.4`，镜像仅提供 `linux/amd64`。该镜像 README 的配置示例采用单文件挂载；不要覆盖整个 `/usr/local/etc/janus` 目录。
+当前 Compose 基于 `mwalbeck/janus-gateway:1.4.1` 构建轻量派生镜像，支持 `linux/amd64` 和 `linux/arm64`。派生层只补装 HTTP 健康检查所需的 `curl`；Janus 使用镜像内 `/opt/janus/bin/janus` 和 `/opt/janus/etc/janus` 路径。Compose 只覆盖 `janus.jcfg` 主配置文件，保留镜像提供的 transport 和 AudioBridge 插件配置。
 
 本地启动独立 Janus 媒体服务：
 
@@ -47,8 +47,6 @@ KWS_NUM_THREADS=1
 配置开放 TCP `8088`（HTTP WebSocket）和 UDP `10000-10100`（WebRTC ICE/RTP）。生产环境应将 Janus WebSocket 限制为 Go 服务可访问，并通过反向代理提供 TLS/WSS；不要把未启用 HTTPS 的 HTTP transport 直接暴露到公网。部署在 NAT 后方时，需要在 Janus 中设置公网映射地址，或部署 TURN 服务并在 Go 的 ICE server 配置中指定。当前 compose 是联调起点，真实服务器上的防火墙/NAT 地址必须按实际网络校验。
 
 Janus Image、配置路径和配置项需在目标镜像中核对。健康检查调用 Janus HTTP transport 的 `/janus/info`。Go 服务读取 `JANUS_WS_URL`、`JANUS_API_SECRET` 和可选的 `JANUS_ADMIN_KEY`；业务房间会分配独立的持久数字 ID，并通过 AudioBridge 动态创建，运行时不会共用一个全局房间。密钥通过环境变量或平台 Secret 注入，不提交到仓库。首次运行应在限制访问的测试环境验证 Janus API Secret/Admin Key 与镜像配置一致。
-
-Compose 只覆盖镜像内的 `janus.jcfg` 主配置文件，保留镜像提供的 HTTP/WebSocket transport 和 AudioBridge 插件配置；不要把仅含主配置的 `deploy/janus/` 整个目录挂载到 `/usr/local/etc/janus`，否则会遮住其余模块配置。
 
 ## Go 服务数据
 

@@ -1,14 +1,16 @@
 services:
   janus:
-    image: canyan/janus-gateway:1.1.4
+    image: linx-intercom-janus:1.4.1
+    build:
+      context: ./janus
     restart: unless-stopped
-    command: ["janus", "-F", "/usr/local/etc/janus"]
+    command: ["/opt/janus/bin/janus", "-F", "/opt/janus/etc/janus"]
     ports:
       - "${JANUS_HTTP_PORT:-8088}:8088/tcp"
       - "${JANUS_WS_PORT:-8188}:8188/tcp"
       - "10000-10100:10000-10100/udp"
     volumes:
-      - ./janus/janus.jcfg:/usr/local/etc/janus/janus.jcfg:ro
+      - ./janus/janus.jcfg:/opt/janus/etc/janus/janus.jcfg:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8088/janus/info >/dev/null"]
       interval: 15s

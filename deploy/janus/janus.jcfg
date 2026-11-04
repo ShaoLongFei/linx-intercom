@@ -1,8 +1,8 @@
 general: {
-  configs_folder = "/usr/local/etc/janus"
-  plugins_folder = "/usr/local/lib/janus/plugins"
-  transports_folder = "/usr/local/lib/janus/transports"
-  events_folder = "/usr/local/lib/janus/events"
+  configs_folder = "/opt/janus/etc/janus"
+  plugins_folder = "/opt/janus/lib/janus/plugins"
+  transports_folder = "/opt/janus/lib/janus/transports"
+  events_folder = "/opt/janus/lib/janus/events"
   log_to_stdout = true
   debug_level = 4
 }
