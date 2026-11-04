@@ -108,7 +108,7 @@ func (h *Handler) execute(ctx context.Context, request rpcRequest, deviceID, use
 		// 不记录 arguments：参数中可能有一次性配对码等不适合进入日志的内容。
 		slog.Info("MCP tool call started", "device_id", deviceID, "user_id", userID, "tool", request.Params.Name)
 	}
-	result, err := h.call(ctx, request, userID)
+	result, err := h.call(ctx, request, deviceID, userID)
 	if err != nil {
 		slog.Warn("MCP tool call failed", "device_id", deviceID, "tool", request.Params.Name, "error", err)
 		result.IsError = true
@@ -132,7 +132,7 @@ func (h *Handler) authorized(r *http.Request) bool {
 	return len(token) == len(h.token) && subtle.ConstantTimeCompare([]byte(token), []byte(h.token)) == 1
 }
 
-func (h *Handler) call(ctx context.Context, request rpcRequest, userID string) (toolResult, error) {
+func (h *Handler) call(ctx context.Context, request rpcRequest, deviceID, userID string) (toolResult, error) {
 	if request.Method == "tools/list" {
 		return toolResult{Tools: []toolSpec{
 			{Name: "create_room", Description: "创建语音对讲房间", InputSchema: objectSchema(map[string]any{"name": stringSchema("房间名称")})},
@@ -187,21 +187,26 @@ func (h *Handler) call(ctx context.Context, request rpcRequest, userID string) (
 		if err != nil {
 			return toolResult{}, err
 		}
+		// 一次性配对码属于短期凭证，日志只记创建者和有效期，不记录码值。
+		slog.Info("friend pairing code created", "device_id", deviceID, "user_id", userID, "expires_in_seconds", 300)
 		return textContent(fmt.Sprintf("一次性配对码：%s，有效期 5 分钟", code)), nil
 	case "accept_friend":
 		code, err := stringArg(args, "code")
 		if err != nil {
 			return toolResult{}, err
 		}
-		if _, err := h.store.AcceptPairCode(userID, code); err != nil {
+		requestID, err := h.store.AcceptPairCode(userID, code)
+		if err != nil {
 			return toolResult{}, err
 		}
+		slog.Info("friend pairing request created", "device_id", deviceID, "user_id", userID, "request_id", requestID)
 		return textContent("配对请求已提交；发码方还需查询并语音确认后才会成为好友"), nil
 	case "list_pairing_requests":
 		requests, err := h.store.PendingPairings(userID)
 		if err != nil {
 			return toolResult{}, err
 		}
+		slog.Info("pending friend pairing requests queried", "device_id", deviceID, "user_id", userID, "count", len(requests))
 		payload, _ := json.Marshal(requests)
 		return textContent(string(payload)), nil
 	case "confirm_friendship":
@@ -212,6 +217,7 @@ func (h *Handler) call(ctx context.Context, request rpcRequest, userID string) (
 		if err := h.store.ConfirmFriendship(userID, requestID); err != nil {
 			return toolResult{}, err
 		}
+		slog.Info("friendship confirmed", "device_id", deviceID, "user_id", userID, "request_id", requestID)
 		return textContent("好友双方已确认，配对成功"), nil
 	case "invite_member":
 		roomID, err := stringArg(args, "room_id")
@@ -230,12 +236,14 @@ func (h *Handler) call(ctx context.Context, request rpcRequest, userID string) (
 		if err != nil {
 			return toolResult{}, err
 		}
+		slog.Info("room invitation created", "invitation_id", invitationID, "room_id", roomID, "inviter_id", userID, "invitee_id", targetUser)
 		return textContent(fmt.Sprintf("邀请已发送，等待对方确认，编号 %s", invitationID)), nil
 	case "list_pending_invitations":
 		invitations, err := h.store.PendingInvitations(userID)
 		if err != nil {
 			return toolResult{}, err
 		}
+		slog.Info("pending room invitations queried", "device_id", deviceID, "user_id", userID, "count", len(invitations))
 		payload, _ := json.Marshal(invitations)
 		return textContent(string(payload)), nil
 	case "accept_invitation":
@@ -260,7 +268,7 @@ func (h *Handler) call(ctx context.Context, request rpcRequest, userID string) (
 				return toolResult{}, failure
 			}
 		}
-		slog.Info("device accepted room invitation", "room_id", room.ID, "user_id", userID)
+		slog.Info("device accepted room invitation", "invitation_id", invitationID, "room_id", room.ID, "user_id", userID)
 		return textContent("已加入房间"), nil
 	case "list_online_members":
 		roomID, err := stringArg(args, "room_id")
@@ -277,6 +285,7 @@ func (h *Handler) call(ctx context.Context, request rpcRequest, userID string) (
 				online = append(online, member)
 			}
 		}
+		slog.Info("online room members queried", "device_id", deviceID, "user_id", userID, "room_id", roomID, "online_count", len(online), "member_count", len(members))
 		payload, _ := json.Marshal(online)
 		return textContent(string(payload)), nil
 	default:

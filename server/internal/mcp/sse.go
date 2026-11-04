@@ -92,7 +92,7 @@ func (h *Handler) sseMessage(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) protocolServer(deviceID, userID string) *sdk.Server {
 	server := sdk.NewServer(&sdk.Implementation{Name: "linx-intercom", Version: "1"}, nil)
-	listed, _ := h.call(context.Background(), rpcRequest{Method: "tools/list"}, userID)
+	listed, _ := h.call(context.Background(), rpcRequest{Method: "tools/list"}, deviceID, userID)
 	for _, tool := range listed.Tools {
 		server.AddTool(&sdk.Tool{Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema},
 			func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
