@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +101,28 @@ func TestFriendPairingRequiresOwnerConfirmation(t *testing.T) {
 	callTool(t, handler, "pair-owner", "confirm_friendship", map[string]any{"request_id": requestID})
 	if !db.AreFriends(owner, requester) {
 		t.Fatal("owner confirmation did not establish friendship")
+	}
+}
+
+func TestPairingCodeIsRedactedFromOperationalLogs(t *testing.T) {
+	db, err := store.Open(t.TempDir() + "/pairing-logs.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.EnsureUser("pair-owner"); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	code := callTool(t, NewHandler(db, nil, "mcp-secret"), "pair-owner", "pair_friend", map[string]any{})
+	if code == "" || bytes.Contains(logs.Bytes(), []byte(strings.TrimPrefix(code, "一次性配对码："))) {
+		t.Fatalf("pairing code was empty or appeared in logs: result=%q logs=%s", code, logs.String())
+	}
+	if !bytes.Contains(logs.Bytes(), []byte("friend pairing code created")) {
+		t.Fatalf("pairing code creation event missing from logs: %s", logs.String())
 	}
 }
 
