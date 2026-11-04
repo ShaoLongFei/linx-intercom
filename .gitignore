@@ -1,0 +1,22 @@
+# Go
+/server/intercom-server
+/server/*.db
+/server/*.db-*
+
+# ESP-IDF
+/firmware/esp32s3/build/
+/firmware/esp32s3/sdkconfig
+/firmware/esp32s3/sdkconfig.old
+/firmware/esp32s3/managed_components/
+/firmware/esp32s3/dependencies.lock
+
+# Local credentials and environment
+.env
+.env.*
+!.env.example
+.local/
+
+# Editors and OS files
+.DS_Store
+.idea/
+.vscode/
