@@ -15,10 +15,14 @@ import (
 
 const sessionQueueSize = 32
 
+// 每帧按模拟器的 20 ms 音频粒度估算，约 1 秒回看窗口用于覆盖唤醒短语及解码延迟。
+const WakeWordLookbackFrames = 50
+
 type Session struct {
-	ID       string
-	DeviceID string
-	UserID   string
+	ID           string
+	DeviceID     string
+	UserID       string
+	LinxClientID string
 
 	AudioIn       chan []byte
 	JanusAudioIn  chan []byte
@@ -113,13 +117,17 @@ func newID() string {
 }
 
 type SessionManager struct {
-	mu          sync.Mutex
-	grace       time.Duration
-	sessions    map[string]*Session
-	userIDs     map[string]string
-	logger      *slog.Logger
-	resolveUser func(string) (string, error)
-	onCreate    func(*Session)
+	mu               sync.Mutex
+	grace            time.Duration
+	sessions         map[string]*Session
+	userIDs          map[string]string
+	clientIDs        map[string]string
+	logger           *slog.Logger
+	resolveUser      func(string) (string, error)
+	resolveClientID  func(string) (string, error)
+	wakeWordFactory  func() (audio.WakeWordDetector, error)
+	wakeWordLookback int
+	onCreate         func(*Session)
 }
 
 func NewSessionManager(grace time.Duration) *SessionManager {
@@ -127,11 +135,34 @@ func NewSessionManager(grace time.Duration) *SessionManager {
 		grace = 60 * time.Second
 	}
 	return &SessionManager{
-		grace:    grace,
-		sessions: make(map[string]*Session),
-		userIDs:  make(map[string]string),
-		logger:   slog.Default(),
+		grace:     grace,
+		sessions:  make(map[string]*Session),
+		userIDs:   make(map[string]string),
+		clientIDs: make(map[string]string),
+		wakeWordFactory: func() (audio.WakeWordDetector, error) {
+			return audio.DisabledDetector{}, nil
+		},
+		wakeWordLookback: 1,
+		logger:           slog.Default(),
 	}
+}
+
+func (m *SessionManager) SetWakeWordFactory(factory func() (audio.WakeWordDetector, error), lookbackFrames int) {
+	m.mu.Lock()
+	if factory == nil {
+		m.wakeWordFactory = func() (audio.WakeWordDetector, error) { return audio.DisabledDetector{}, nil }
+		m.wakeWordLookback = 1
+	} else {
+		m.wakeWordFactory = factory
+		m.wakeWordLookback = max(lookbackFrames, 1)
+	}
+	m.mu.Unlock()
+}
+
+func (m *SessionManager) SetLinxClientIDResolver(resolve func(string) (string, error)) {
+	m.mu.Lock()
+	m.resolveClientID = resolve
+	m.mu.Unlock()
 }
 
 func (m *SessionManager) SetIdentityResolver(resolve func(string) (string, error)) {
@@ -165,9 +196,28 @@ func (m *SessionManager) Attach(deviceID string, conn *websocket.Conn) (*Session
 			}
 			m.userIDs[deviceID] = userID
 		}
+		clientID := m.clientIDs[deviceID]
+		if clientID == "" && m.resolveClientID != nil {
+			var err error
+			clientID, err = m.resolveClientID(deviceID)
+			if err != nil {
+				return nil, 0, fmt.Errorf("resolve Linx client identity: %w", err)
+			}
+		}
+		if clientID == "" {
+			clientID = newID()
+		}
+		// 先解析持久身份，再加载原生 KWS 模型，避免身份存储故障时遗留模型资源。
+		detector, err := m.wakeWordFactory()
+		if err != nil {
+			return nil, 0, fmt.Errorf("initialize device wake-word detector: %w", err)
+		}
 		session = newSession(deviceID, userID, sessionQueueSize)
+		session.AudioRouter = audio.NewRouter(detector, m.wakeWordLookback)
+		session.LinxClientID = clientID
+		m.clientIDs[deviceID] = clientID
 		m.sessions[deviceID] = session
-		m.logger.Info("device session created", "device_id", deviceID, "session_id", session.ID)
+		m.logger.Info("device session created", "device_id", deviceID, "session_id", session.ID, "wake_word_lookback_frames", m.wakeWordLookback)
 		if m.onCreate != nil {
 			m.onCreate(session)
 		}
@@ -272,6 +322,7 @@ func (m *SessionManager) expire(deviceID string, expected *Session, generation u
 	m.mu.Unlock()
 	session.cancel()
 	LeaveMedia(session)
+	session.AudioRouter.Close()
 	m.logger.Info("device session expired", "device_id", deviceID, "session_id", session.ID)
 }
 

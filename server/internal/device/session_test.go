@@ -2,6 +2,7 @@ package device
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"linx-intercom/server/internal/audio"
 )
 
 func TestDeviceHandlerRejectsInvalidCredentialsBeforeUpgrade(t *testing.T) {
@@ -131,6 +133,39 @@ func TestSessionReconnectWithinGracePreservesSessionAndUser(t *testing.T) {
 	}
 	if manager.ActiveCount() != 1 {
 		t.Fatalf("active session count = %d, want 1", manager.ActiveCount())
+	}
+}
+
+func TestSessionRetainsPersistentLinxClientIDAcrossReconnect(t *testing.T) {
+	manager := NewSessionManager(time.Second)
+	manager.SetLinxClientIDResolver(func(string) (string, error) { return "550e8400-e29b-41d4-a716-446655440000", nil })
+	first, generation, err := manager.Attach("device-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.LinxClientID != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("Linx client ID = %q", first.LinxClientID)
+	}
+	manager.Disconnect("device-a", generation)
+	resumed, _, err := manager.Attach("device-a", nil)
+	if err != nil || resumed.LinxClientID != first.LinxClientID {
+		t.Fatalf("Linx client ID after reconnect = %q, %v", resumed.LinxClientID, err)
+	}
+}
+
+func TestSessionDoesNotInitializeWakeWordWhenLinxIdentityFails(t *testing.T) {
+	manager := NewSessionManager(time.Second)
+	manager.SetLinxClientIDResolver(func(string) (string, error) { return "", errors.New("database unavailable") })
+	called := false
+	manager.SetWakeWordFactory(func() (audio.WakeWordDetector, error) {
+		called = true
+		return audio.DisabledDetector{}, nil
+	}, 50)
+	if _, _, err := manager.Attach("device-a", nil); err == nil {
+		t.Fatal("expected Linx identity resolution to fail")
+	}
+	if called {
+		t.Fatal("wake-word resources were initialized before Linx identity resolution")
 	}
 }
 

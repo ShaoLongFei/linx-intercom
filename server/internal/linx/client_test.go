@@ -14,7 +14,7 @@ import (
 
 func TestClientAuthenticatesNegotiatesAndRoutesAudio(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer linx-secret" || r.Header.Get("Device-Id") != "virtual-device-a" {
+		if r.Header.Get("Authorization") != "Bearer linx-secret" || r.Header.Get("Device-Id") != "virtual-device-a" || r.Header.Get("Client-Id") != "linx-client-a" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -41,7 +41,7 @@ func TestClientAuthenticatesNegotiatesAndRoutesAudio(t *testing.T) {
 	eventsOut := make(chan json.RawMessage, 1)
 	audioIn <- []byte("spoken command")
 	ctx, cancel := context.WithCancel(context.Background())
-	client := Client{URL: "ws" + strings.TrimPrefix(server.URL, "http"), Token: "linx-secret"}
+	client := Client{URL: "ws" + strings.TrimPrefix(server.URL, "http"), Token: "linx-secret", ClientID: "linx-client-a"}
 	result := make(chan error, 1)
 	go func() { result <- client.Run(ctx, "virtual-device-a", audioIn, audioOut, eventsIn, eventsOut) }()
 	select {

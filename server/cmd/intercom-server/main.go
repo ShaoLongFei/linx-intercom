@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"linx-intercom/server/internal/audio"
 	"linx-intercom/server/internal/device"
 	"linx-intercom/server/internal/linx"
 	"linx-intercom/server/internal/mcp"
@@ -57,6 +59,29 @@ func main() {
 	defer db.Close()
 	sessions := device.NewSessionManager(60 * time.Second)
 	sessions.SetIdentityResolver(db.EnsureUser)
+	sessions.SetLinxClientIDResolver(db.LinxClientIDForDevice)
+	wakeConfig, wakeEnabled, err := parseWakeWordConfig()
+	if err != nil {
+		logger.Error("wake-word configuration invalid", "error", err)
+		os.Exit(1)
+	}
+	if wakeEnabled {
+		sessions.SetWakeWordFactory(func() (audio.WakeWordDetector, error) {
+			engine, err := audio.NewSherpaKeywordEngine(wakeConfig)
+			if err != nil {
+				return nil, err
+			}
+			detector, err := audio.NewPCMKeywordDetector(engine)
+			if err != nil {
+				engine.Close()
+				return nil, err
+			}
+			logger.Info("device wake-word detector initialized", "engine", "sherpa-onnx", "sample_rate", 16000, "device_model_instances", 1)
+			return detector, nil
+		}, device.WakeWordLookbackFrames)
+	} else {
+		logger.Warn("wake-word detection disabled; configure KWS_ENCODER, KWS_DECODER, KWS_JOINER, KWS_TOKENS, and KWS_KEYWORDS_FILE")
+	}
 	linxURL := os.Getenv("LINX_WS_URL")
 	linxTokens, err := parseDeviceTokens(os.Getenv("LINX_DEVICE_TOKENS"))
 	if err != nil {
@@ -70,7 +95,7 @@ func main() {
 			logger.Warn("Linx virtual device not configured", "device_id", session.DeviceID)
 			return
 		}
-		device.StartLinxSession(session, linx.Client{URL: linxURL, Token: token})
+		device.StartLinxSession(session, linx.Client{URL: linxURL, Token: token, ClientID: session.LinxClientID})
 	})
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -132,6 +157,35 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("intercom server stopped")
+}
+
+func parseWakeWordConfig() (audio.SherpaConfig, bool, error) {
+	config := audio.SherpaConfig{
+		Encoder: os.Getenv("KWS_ENCODER"), Decoder: os.Getenv("KWS_DECODER"), Joiner: os.Getenv("KWS_JOINER"),
+		Tokens: os.Getenv("KWS_TOKENS"), KeywordsFile: os.Getenv("KWS_KEYWORDS_FILE"), NumThreads: 1,
+		KeywordsScore: 3.0, KeywordsThreshold: 0.1,
+	}
+	paths := []string{config.Encoder, config.Decoder, config.Joiner, config.Tokens, config.KeywordsFile}
+	configured := 0
+	for _, path := range paths {
+		if strings.TrimSpace(path) != "" {
+			configured++
+		}
+	}
+	if configured == 0 {
+		return config, false, nil
+	}
+	if configured != len(paths) {
+		return audio.SherpaConfig{}, false, errors.New("KWS encoder, decoder, joiner, tokens, and keywords file must be configured together")
+	}
+	if raw := os.Getenv("KWS_NUM_THREADS"); raw != "" {
+		threads, err := strconv.Atoi(raw)
+		if err != nil || threads < 1 || threads > 64 {
+			return audio.SherpaConfig{}, false, errors.New("KWS_NUM_THREADS must be an integer from 1 to 64")
+		}
+		config.NumThreads = threads
+	}
+	return config, true, nil
 }
 
 func checkHealth(addr string) error {

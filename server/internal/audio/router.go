@@ -30,6 +30,7 @@ type Router struct {
 	linxAudio     chan []byte
 	janusDownlink chan []byte
 	linxDownlink  chan []byte
+	closeOnce     sync.Once
 }
 
 func NewRouter(detector WakeWordDetector, lookbackFrames int) *Router {
@@ -57,6 +58,7 @@ func (r *Router) Process(frame []byte) Transition {
 		return TransitionNone
 	}
 	copyOfFrame := append([]byte(nil), frame...)
+	// 检测器按流式顺序消费 PCM；回看窗口只把确认早于窗口的音频送进房间。
 	detected, err := r.detector.Process(copyOfFrame)
 	if err != nil {
 		r.buffer = nil
@@ -126,6 +128,14 @@ func (r *Router) ClearJanusDownlink() {
 	r.mu.Lock()
 	clearQueue(r.janusDownlink)
 	r.mu.Unlock()
+}
+
+func (r *Router) Close() {
+	r.closeOnce.Do(func() {
+		if detector, ok := r.detector.(interface{ Close() }); ok {
+			detector.Close()
+		}
+	})
 }
 
 func (r *Router) enqueue(queue chan []byte, frame []byte, name string) {

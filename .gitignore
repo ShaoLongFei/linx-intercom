@@ -3,6 +3,8 @@
 /server/*.db
 /server/*.db-*
 /deploy/.env
+/deploy/models/kws/*
+!/deploy/models/kws/.gitkeep
 
 # ESP-IDF
 /firmware/esp32s3/build/

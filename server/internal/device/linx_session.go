@@ -52,7 +52,9 @@ func StartAudioRouting(session *Session) {
 			case <-session.Done:
 				return
 			case frame := <-session.AudioIn:
-				if transition := session.AudioRouter.Process(frame); transition == audio.TransitionWakeDetected {
+				transition := session.AudioRouter.Process(frame)
+				if transition == audio.TransitionWakeDetected {
+					slog.Info("wake word detected; switching microphone route", "device_id", session.DeviceID, "session_id", session.ID, "from", "room", "to", "control")
 					clearQueue(session.AudioOut)
 					message, _ := json.Marshal(map[string]string{"type": "listen", "state": "detect"})
 					select {
@@ -64,6 +66,8 @@ func StartAudioRouting(session *Session) {
 					case session.ControlOut <- ControlMessage{Type: "mode", Mode: "control"}:
 					default:
 					}
+				} else if transition == audio.TransitionDetectionError {
+					slog.Warn("wake-word frame withheld after detector error", "device_id", session.DeviceID, "session_id", session.ID)
 				}
 				drainRoutedAudio(session.AudioRouter.RoomAudio(), session.JanusAudioIn, session.DeviceID, session.ID, "Janus")
 				drainRoutedAudio(session.AudioRouter.LinxAudio(), session.LinxAudioIn, session.DeviceID, session.ID, "Linx")
@@ -131,6 +135,7 @@ func forwardLinxResults(ctx context.Context, session *Session) {
 				continue
 			}
 			if message.Type == "tts" && message.State == "stop" && session.AudioRouter.CompleteControl() {
+				slog.Info("control response completed; restoring room audio route", "device_id", session.DeviceID, "session_id", session.ID)
 				clearQueue(session.LinxAudioOut)
 				clearQueue(session.AudioOut)
 				select {

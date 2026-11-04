@@ -14,6 +14,7 @@ import (
 type Client struct {
 	URL         string
 	Token       string
+	ClientID    string
 	AudioFormat string
 }
 
@@ -26,10 +27,14 @@ func (c Client) Run(ctx context.Context, deviceID string, audioIn <-chan []byte,
 	if c.URL == "" || c.Token == "" || deviceID == "" {
 		return errors.New("Linx URL, token, and device ID are required")
 	}
+	clientID := c.ClientID
+	if clientID == "" {
+		clientID = deviceID
+	}
 	header := http.Header{
 		"Authorization":    []string{"Bearer " + c.Token},
 		"Device-Id":        []string{deviceID},
-		"Client-Id":        []string{deviceID},
+		"Client-Id":        []string{clientID},
 		"Protocol-Version": []string{"1"},
 	}
 	conn, response, err := websocket.Dial(ctx, c.URL, &websocket.DialOptions{HTTPHeader: header})

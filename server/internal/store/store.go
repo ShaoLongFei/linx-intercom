@@ -39,6 +39,7 @@ func Open(path string) (*Store, error) {
 	store := &Store{db: db, path: path}
 	if _, err := db.Exec(`PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, device_id TEXT UNIQUE NOT NULL);
+CREATE TABLE IF NOT EXISTS linx_identities (device_id TEXT PRIMARY KEY REFERENCES users(device_id) ON DELETE CASCADE, client_id TEXT UNIQUE NOT NULL);
 CREATE TABLE IF NOT EXISTS rooms (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_id TEXT NOT NULL REFERENCES users(id));
 CREATE TABLE IF NOT EXISTS janus_rooms (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT UNIQUE NOT NULL REFERENCES rooms(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS room_members (room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id), PRIMARY KEY(room_id, user_id));
@@ -77,6 +78,25 @@ func (s *Store) UserForDevice(deviceID string) (string, error) {
 		return "", ErrNotFound
 	}
 	return userID, err
+}
+
+func (s *Store) LinxClientIDForDevice(deviceID string) (string, error) {
+	if deviceID == "" {
+		return "", errors.New("device ID is required")
+	}
+	var exists int
+	if err := s.db.QueryRow(`SELECT 1 FROM users WHERE device_id = ?`, deviceID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	} else if err != nil {
+		return "", err
+	}
+	clientID := newID()
+	if _, err := s.db.Exec(`INSERT INTO linx_identities(device_id, client_id) VALUES(?, ?) ON CONFLICT(device_id) DO NOTHING`, deviceID, clientID); err != nil {
+		return "", fmt.Errorf("ensure Linx client identity: %w", err)
+	}
+	var id string
+	err := s.db.QueryRow(`SELECT client_id FROM linx_identities WHERE device_id = ?`, deviceID).Scan(&id)
+	return id, err
 }
 
 func (s *Store) CreateRoom(ownerID, name string) (string, error) {

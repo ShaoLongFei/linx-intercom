@@ -21,6 +21,10 @@ func TestDeviceIdentityAndRoomPersist(t *testing.T) {
 	if err != nil || room.JanusID == 0 {
 		t.Fatalf("Janus room mapping = %+v, %v; want non-zero room ID", room, err)
 	}
+	linxClientID, err := db.LinxClientIDForDevice("device-a")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -36,6 +40,10 @@ func TestDeviceIdentityAndRoomPersist(t *testing.T) {
 	}
 	if reopenedRoom.JanusID != room.JanusID {
 		t.Fatalf("Janus room ID changed after reopen: got %d, want %d", reopenedRoom.JanusID, room.JanusID)
+	}
+	reopenedClientID, err := db.LinxClientIDForDevice("device-a")
+	if err != nil || reopenedClientID != linxClientID {
+		t.Fatalf("Linx client ID = %q, %v; want persisted value %q", reopenedClientID, err, linxClientID)
 	}
 }
 

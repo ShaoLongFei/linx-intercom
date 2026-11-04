@@ -33,10 +33,17 @@ services:
       LINX_WS_URL: ${LINX_WS_URL:-wss://xrobo-io.qiniuapi.com/v1/ws/}
       LINX_DEVICE_TOKENS: ${LINX_DEVICE_TOKENS:-{}}
       MCP_API_TOKEN: ${MCP_API_TOKEN:?set MCP_API_TOKEN in deploy/.env}
+      KWS_ENCODER: ${KWS_ENCODER:-}
+      KWS_DECODER: ${KWS_DECODER:-}
+      KWS_JOINER: ${KWS_JOINER:-}
+      KWS_TOKENS: ${KWS_TOKENS:-}
+      KWS_KEYWORDS_FILE: ${KWS_KEYWORDS_FILE:-}
+      KWS_NUM_THREADS: ${KWS_NUM_THREADS:-1}
     ports:
       - "${INTERCOM_HTTP_PORT:-8080}:8080/tcp"
     volumes:
       - intercom-data:/var/lib/intercom
+      - ./models/kws:/opt/kws:ro
     healthcheck:
       test: ["CMD", "/usr/local/bin/intercom-server", "-healthcheck"]
       interval: 15s
