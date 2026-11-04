@@ -99,16 +99,34 @@ func TestTwoDeviceIntercomWorkflow(t *testing.T) {
 	}
 
 	invitationText := callTool(t, mcpServer.URL, "device-a", "invite_member", map[string]any{"room_id": roomID, "device_id": "device-b"})
-	invitationID := strings.TrimPrefix(invitationText, "邀请已发送，等待对方确认，编号 ")
-	if invitationID == invitationText || invitationID == "" {
+	if !strings.Contains(invitationText, "等待对方确认") {
 		t.Fatalf("invite_member result = %q", invitationText)
+	}
+	pendingText := callTool(t, mcpServer.URL, "device-b", "list_pending_invitations", map[string]any{})
+	var pendingInvitations []struct {
+		ID       string `json:"id"`
+		RoomID   string `json:"room_id"`
+		RoomName string `json:"room_name"`
+		Inviter  string `json:"inviter_id"`
+	}
+	if err := json.Unmarshal([]byte(pendingText), &pendingInvitations); err != nil || len(pendingInvitations) != 1 {
+		t.Fatalf("pending invitations = %s, error = %v", pendingText, err)
+	}
+	if pendingInvitations[0].RoomID != roomID || pendingInvitations[0].RoomName != "E2E Room" || pendingInvitations[0].Inviter != userA {
+		t.Fatalf("pending invitation details = %+v", pendingInvitations[0])
+	}
+	if got := callTool(t, mcpServer.URL, "device-a", "list_pending_invitations", map[string]any{}); got != "[]" {
+		t.Fatalf("invitation leaked to inviter instead of invitee: %s", got)
 	}
 	beforeAccept, err := db.RoomMembers(roomID)
 	if err != nil || len(beforeAccept) != 1 || beforeAccept[0] != userA {
 		t.Fatalf("unconfirmed invitation changed membership: %v, %v", beforeAccept, err)
 	}
-	if got := callTool(t, mcpServer.URL, "device-b", "accept_invitation", map[string]any{"invitation_id": invitationID}); got != "已加入房间" {
+	if got := callTool(t, mcpServer.URL, "device-b", "accept_invitation", map[string]any{"invitation_id": pendingInvitations[0].ID}); got != "已加入房间" {
 		t.Fatalf("accept_invitation result = %q", got)
+	}
+	if got := callTool(t, mcpServer.URL, "device-b", "list_pending_invitations", map[string]any{}); got != "[]" {
+		t.Fatalf("accepted invitation remained pending: %s", got)
 	}
 
 	membersText := callTool(t, mcpServer.URL, "device-a", "list_online_members", map[string]any{"room_id": roomID})

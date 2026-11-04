@@ -30,6 +30,13 @@ type PairingRequest struct {
 	RequesterID string `json:"requester_id"`
 }
 
+type Invitation struct {
+	ID       string `json:"id"`
+	RoomID   string `json:"room_id"`
+	RoomName string `json:"room_name"`
+	Inviter  string `json:"inviter_id"`
+}
+
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -187,6 +194,23 @@ func (s *Store) InvitationRoom(invitationID, userID string) (Room, error) {
 		return Room{}, ErrNotFound
 	}
 	return room, err
+}
+
+func (s *Store) PendingInvitations(inviteeID string) ([]Invitation, error) {
+	rows, err := s.db.Query(`SELECT i.id, i.room_id, r.name, i.inviter_id FROM invitations i JOIN rooms r ON r.id = i.room_id WHERE i.invitee_id = ? AND i.status = 'pending' ORDER BY i.created_at, i.id`, inviteeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	invitations := make([]Invitation, 0)
+	for rows.Next() {
+		var invitation Invitation
+		if err := rows.Scan(&invitation.ID, &invitation.RoomID, &invitation.RoomName, &invitation.Inviter); err != nil {
+			return nil, err
+		}
+		invitations = append(invitations, invitation)
+	}
+	return invitations, rows.Err()
 }
 
 func (s *Store) RollbackInvitationAcceptance(invitationID, userID string) error {

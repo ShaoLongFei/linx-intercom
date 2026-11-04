@@ -141,6 +141,7 @@ func (h *Handler) call(ctx context.Context, request rpcRequest, userID string) (
 			{Name: "list_pairing_requests", Description: "查询等待本人确认的好友配对请求", InputSchema: objectSchema(nil)},
 			{Name: "confirm_friendship", Description: "确认好友配对请求", InputSchema: objectSchema(map[string]any{"request_id": stringSchema("待确认配对请求编号")})},
 			{Name: "invite_member", Description: "邀请在线好友进入房间", InputSchema: objectSchema(map[string]any{"room_id": stringSchema("房间编号"), "device_id": stringSchema("好友设备编号")})},
+			{Name: "list_pending_invitations", Description: "查询等待本人确认的房间邀请", InputSchema: objectSchema(nil)},
 			{Name: "accept_invitation", Description: "确认加入房间邀请", InputSchema: objectSchema(map[string]any{"invitation_id": stringSchema("邀请编号")})},
 			{Name: "list_online_members", Description: "查询房间当前在线成员", InputSchema: objectSchema(map[string]any{"room_id": stringSchema("房间编号")})},
 		}}, nil
@@ -230,6 +231,13 @@ func (h *Handler) call(ctx context.Context, request rpcRequest, userID string) (
 			return toolResult{}, err
 		}
 		return textContent(fmt.Sprintf("邀请已发送，等待对方确认，编号 %s", invitationID)), nil
+	case "list_pending_invitations":
+		invitations, err := h.store.PendingInvitations(userID)
+		if err != nil {
+			return toolResult{}, err
+		}
+		payload, _ := json.Marshal(invitations)
+		return textContent(string(payload)), nil
 	case "accept_invitation":
 		invitationID, err := stringArg(args, "invitation_id")
 		if err != nil {
