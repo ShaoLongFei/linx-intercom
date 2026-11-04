@@ -113,10 +113,16 @@ func TestDeviceWebSocketExchangesAudioAndControlFrames(t *testing.T) {
 
 func TestSessionReconnectWithinGracePreservesSessionAndUser(t *testing.T) {
 	manager := NewSessionManager(time.Second)
-	first, generation := manager.Attach("device-a", nil)
+	first, generation, err := manager.Attach("device-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	manager.Disconnect("device-a", generation)
 
-	second, _ := manager.Attach("device-a", nil)
+	second, _, err := manager.Attach("device-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if second != first {
 		t.Fatal("reconnect during grace created a different session")
 	}
@@ -128,14 +134,38 @@ func TestSessionReconnectWithinGracePreservesSessionAndUser(t *testing.T) {
 	}
 }
 
+func TestDisconnectedSessionIsOfflineDuringReconnectGrace(t *testing.T) {
+	manager := NewSessionManager(time.Second)
+	session, generation, err := manager.Attach("device-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.mu.Lock()
+	session.conn = &websocket.Conn{}
+	session.mu.Unlock()
+	if !manager.IsUserOnline(session.UserID) {
+		t.Fatal("connected session should be online")
+	}
+	manager.Disconnect("device-a", generation)
+	if manager.IsUserOnline(session.UserID) {
+		t.Fatal("disconnected session should be offline during reconnect grace")
+	}
+}
+
 func TestSessionReconnectClearsStaleAudioAndControlFrames(t *testing.T) {
 	manager := NewSessionManager(time.Second)
-	first, generation := manager.Attach("device-a", nil)
+	first, generation, err := manager.Attach("device-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	first.EnqueueAudioOut([]byte("old room audio"))
 	first.ControlOut <- ControlMessage{Type: "play_old_tts"}
 	manager.Disconnect("device-a", generation)
 
-	reconnected, _ := manager.Attach("device-a", nil)
+	reconnected, _, err := manager.Attach("device-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if reconnected != first {
 		t.Fatal("reconnect during grace should preserve the runtime session")
 	}
@@ -149,7 +179,10 @@ func TestSessionReconnectClearsStaleAudioAndControlFrames(t *testing.T) {
 
 func TestSessionExpiryReleasesRuntimeButKeepsIdentity(t *testing.T) {
 	manager := NewSessionManager(15 * time.Millisecond)
-	first, generation := manager.Attach("device-a", nil)
+	first, generation, err := manager.Attach("device-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	userID := first.UserID
 	manager.Disconnect("device-a", generation)
 
@@ -161,7 +194,10 @@ func TestSessionExpiryReleasesRuntimeButKeepsIdentity(t *testing.T) {
 		t.Fatalf("session was not expired: active count = %d", got)
 	}
 
-	second, _ := manager.Attach("device-a", nil)
+	second, _, err := manager.Attach("device-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if second.ID == first.ID {
 		t.Fatal("new runtime session reused expired session id")
 	}
@@ -172,8 +208,14 @@ func TestSessionExpiryReleasesRuntimeButKeepsIdentity(t *testing.T) {
 
 func TestStaleDisconnectDoesNotExpireReplacementSession(t *testing.T) {
 	manager := NewSessionManager(time.Second)
-	_, oldGeneration := manager.Attach("device-a", nil)
-	_, newGeneration := manager.Attach("device-a", nil)
+	_, oldGeneration, err := manager.Attach("device-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, newGeneration, err := manager.Attach("device-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if oldGeneration == newGeneration {
 		t.Fatal("replacement connection did not get a new generation")
 	}

@@ -3,6 +3,7 @@ package device
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -18,11 +19,15 @@ type Session struct {
 	DeviceID string
 	UserID   string
 
-	AudioIn    chan []byte
-	AudioOut   chan []byte
-	ControlIn  chan ControlMessage
-	ControlOut chan ControlMessage
-	Done       <-chan struct{}
+	AudioIn       chan []byte
+	AudioOut      chan []byte
+	ControlIn     chan ControlMessage
+	ControlOut    chan ControlMessage
+	LinxAudioIn   chan []byte
+	LinxAudioOut  chan []byte
+	LinxEventsIn  chan json.RawMessage
+	LinxEventsOut chan json.RawMessage
+	Done          <-chan struct{}
 
 	mu         sync.Mutex
 	conn       *websocket.Conn
@@ -34,15 +39,19 @@ type Session struct {
 func newSession(deviceID, userID string, queueSize int) *Session {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Session{
-		ID:         newID(),
-		DeviceID:   deviceID,
-		UserID:     userID,
-		AudioIn:    make(chan []byte, queueSize),
-		AudioOut:   make(chan []byte, queueSize),
-		ControlIn:  make(chan ControlMessage, queueSize),
-		ControlOut: make(chan ControlMessage, queueSize),
-		Done:       ctx.Done(),
-		cancel:     cancel,
+		ID:            newID(),
+		DeviceID:      deviceID,
+		UserID:        userID,
+		AudioIn:       make(chan []byte, queueSize),
+		AudioOut:      make(chan []byte, queueSize),
+		ControlIn:     make(chan ControlMessage, queueSize),
+		ControlOut:    make(chan ControlMessage, queueSize),
+		LinxAudioIn:   make(chan []byte, queueSize),
+		LinxAudioOut:  make(chan []byte, queueSize),
+		LinxEventsIn:  make(chan json.RawMessage, queueSize),
+		LinxEventsOut: make(chan json.RawMessage, queueSize),
+		Done:          ctx.Done(),
+		cancel:        cancel,
 	}
 }
 
@@ -92,11 +101,13 @@ func newID() string {
 }
 
 type SessionManager struct {
-	mu       sync.Mutex
-	grace    time.Duration
-	sessions map[string]*Session
-	userIDs  map[string]string
-	logger   *slog.Logger
+	mu          sync.Mutex
+	grace       time.Duration
+	sessions    map[string]*Session
+	userIDs     map[string]string
+	logger      *slog.Logger
+	resolveUser func(string) (string, error)
+	onCreate    func(*Session)
 }
 
 func NewSessionManager(grace time.Duration) *SessionManager {
@@ -111,7 +122,19 @@ func NewSessionManager(grace time.Duration) *SessionManager {
 	}
 }
 
-func (m *SessionManager) Attach(deviceID string, conn *websocket.Conn) (*Session, uint64) {
+func (m *SessionManager) SetIdentityResolver(resolve func(string) (string, error)) {
+	m.mu.Lock()
+	m.resolveUser = resolve
+	m.mu.Unlock()
+}
+
+func (m *SessionManager) SetOnCreate(onCreate func(*Session)) {
+	m.mu.Lock()
+	m.onCreate = onCreate
+	m.mu.Unlock()
+}
+
+func (m *SessionManager) Attach(deviceID string, conn *websocket.Conn) (*Session, uint64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -119,12 +142,23 @@ func (m *SessionManager) Attach(deviceID string, conn *websocket.Conn) (*Session
 	if session == nil {
 		userID := m.userIDs[deviceID]
 		if userID == "" {
-			userID = "usr_" + newID()
+			if m.resolveUser != nil {
+				var err error
+				userID, err = m.resolveUser(deviceID)
+				if err != nil {
+					return nil, 0, fmt.Errorf("resolve device user: %w", err)
+				}
+			} else {
+				userID = "usr_" + newID()
+			}
 			m.userIDs[deviceID] = userID
 		}
 		session = newSession(deviceID, userID, sessionQueueSize)
 		m.sessions[deviceID] = session
 		m.logger.Info("device session created", "device_id", deviceID, "session_id", session.ID)
+		if m.onCreate != nil {
+			m.onCreate(session)
+		}
 	}
 
 	session.mu.Lock()
@@ -139,6 +173,10 @@ func (m *SessionManager) Attach(deviceID string, conn *websocket.Conn) (*Session
 		clearQueue(session.AudioOut)
 		clearQueue(session.ControlIn)
 		clearQueue(session.ControlOut)
+		clearQueue(session.LinxAudioIn)
+		clearQueue(session.LinxAudioOut)
+		clearQueue(session.LinxEventsIn)
+		clearQueue(session.LinxEventsOut)
 		m.logger.Info("device session resumed; stale queues cleared", "device_id", deviceID, "session_id", session.ID)
 	}
 	if session.conn != nil && session.conn != conn {
@@ -149,7 +187,21 @@ func (m *SessionManager) Attach(deviceID string, conn *websocket.Conn) (*Session
 	generation := session.generation
 	session.mu.Unlock()
 	m.logger.Info("device session attached", "device_id", deviceID, "session_id", session.ID, "generation", generation)
-	return session, generation
+	return session, generation, nil
+}
+
+func (m *SessionManager) IsUserOnline(userID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, session := range m.sessions {
+		session.mu.Lock()
+		connected := session.conn != nil
+		session.mu.Unlock()
+		if session.UserID == userID && connected {
+			return true
+		}
+	}
+	return false
 }
 
 func clearQueue[T any](queue chan T) {

@@ -18,7 +18,9 @@ cd server
 DEVICE_TOKENS='{"device-001":"replace-with-device-token"}' go run ./cmd/intercom-server
 ```
 
-服务监听 `LISTEN_ADDR`（默认 `:8080`）。`GET /healthz` 为健康检查，`GET /device/ws` 为设备双向 WebSocket。连接请求带 `Device-Id` 和 `Authorization: Bearer <token>`；服务端只接受 `DEVICE_TOKENS` 中登记的设备。每设备音频为二进制 PCM16 单声道帧，控制消息为 JSON 文本帧。设备断线后保留运行会话 60 秒供重连。
+生产联调还需配置 `MCP_API_TOKEN`。绑定过的虚拟灵矽设备配置 `LINX_WS_URL`（优先使用该设备 OTA 返回地址）和 `LINX_DEVICE_TOKENS` JSON 映射。SQLite 文件默认写入 `server/intercom.db`，可通过 `DATABASE_PATH` 修改。服务监听 `LISTEN_ADDR`（默认 `:8080`）。`GET /healthz` 为健康检查，`GET /device/ws` 为设备双向 WebSocket，`GET /mcp` 和 `POST /mcp/message` 为灵矽云端 MCP 服务端点。
+
+设备 WebSocket 请求需带 `Device-Id` 和 `Authorization: Bearer <token>`；服务端只接受 `DEVICE_TOKENS` 中登记的设备。每设备上行音频为二进制 PCM16 单声道帧，控制消息为 JSON 文本帧。设备断线后保留运行会话 60 秒供重连，设备身份和房间/好友数据存于 SQLite。MCP 请求需带服务端配置的 Bearer token 和灵矽提供的 `X-Linx-Device-Id`；工具调用者身份由该设备头映射得出。
 
 运行测试：
 

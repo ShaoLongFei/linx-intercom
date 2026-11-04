@@ -38,7 +38,12 @@ func NewHandler(manager *SessionManager, verifier TokenVerifier) http.Handler {
 			return
 		}
 		conn.SetReadLimit(maxAudioFrameSize)
-		session, generation := manager.Attach(deviceID, conn)
+		session, generation, err := manager.Attach(deviceID, conn)
+		if err != nil {
+			_ = conn.Close(websocket.StatusInternalError, "session unavailable")
+			slog.Error("device session allocation failed", "device_id", deviceID, "error", err)
+			return
+		}
 		serveConnection(manager, session, generation, conn)
 	})
 }
