@@ -20,6 +20,16 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "-healthcheck" {
+		addr := os.Getenv("LISTEN_ADDR")
+		if addr == "" {
+			addr = ":8080"
+		}
+		if err := checkHealth(addr); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	addr := os.Getenv("LISTEN_ADDR")
 	if addr == "" {
 		addr = ":8080"
@@ -122,6 +132,23 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("intercom server stopped")
+}
+
+func checkHealth(addr string) error {
+	probeAddr := addr
+	if strings.HasPrefix(probeAddr, ":") {
+		probeAddr = "127.0.0.1" + probeAddr
+	}
+	client := http.Client{Timeout: 2 * time.Second}
+	response, err := client.Get("http://" + probeAddr + "/healthz")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return errors.New("health endpoint returned non-200 status")
+	}
+	return nil
 }
 
 func parseDeviceTokens(raw string) (device.TokenMap, error) {

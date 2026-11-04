@@ -1,6 +1,20 @@
 package main
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestCheckHealth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	if err := checkHealth(server.Listener.Addr().String()); err != nil {
+		t.Fatalf("checkHealth() = %v", err)
+	}
+}
 
 func TestParseDeviceTokens(t *testing.T) {
 	t.Run("empty configuration is allowed for health-only development", func(t *testing.T) {

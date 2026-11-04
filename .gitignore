@@ -2,6 +2,7 @@
 /server/intercom-server
 /server/*.db
 /server/*.db-*
+/deploy/.env
 
 # ESP-IDF
 /firmware/esp32s3/build/
