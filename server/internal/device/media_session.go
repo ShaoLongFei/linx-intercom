@@ -47,9 +47,12 @@ func JoinMedia(ctx context.Context, session *Session, config media.Config, room 
 		previous.stop()
 		<-previous.done
 	}
+	session.mediaMu.Lock()
+	session.AudioRouter.ClearRoomAudio()
 	clearQueue(session.JanusAudioIn)
 	clearQueue(session.AudioOut)
 	session.AudioRouter.ClearJanusDownlink()
+	session.mediaMu.Unlock()
 	select {
 	case session.ControlOut <- ControlMessage{Type: "room", State: "joined", RoomID: room.ID, Text: room.Name}:
 	default:
@@ -72,9 +75,12 @@ func LeaveMedia(session *Session) {
 	}
 	binding.stop()
 	<-binding.done
+	session.mediaMu.Lock()
+	session.AudioRouter.ClearRoomAudio()
 	clearQueue(session.JanusAudioIn)
 	clearQueue(session.AudioOut)
 	session.AudioRouter.ClearJanusDownlink()
+	session.mediaMu.Unlock()
 	slog.Info("device left Janus room", "device_id", session.DeviceID, "session_id", session.ID, "room_id", binding.roomID)
 }
 

@@ -88,6 +88,23 @@ func TestRouterRepeatedWakeDoesNotRestartControl(t *testing.T) {
 	}
 }
 
+func TestClearRoomAudioDropsPreTransitionLookbackAndQueuedFrames(t *testing.T) {
+	router := NewRouter(&fakeDetector{}, 2)
+	router.Process([]byte("before-room-1"))
+	router.Process([]byte("before-room-2"))
+	router.Process([]byte("before-room-3"))
+	router.ClearRoomAudio()
+	router.Process([]byte("after-room-1"))
+	router.Process([]byte("after-room-2"))
+	if got := receiveAll(router.RoomAudio()); len(got) != 0 {
+		t.Fatalf("pre-transition audio escaped after room transition: %q", got)
+	}
+	router.Process([]byte("after-room-3"))
+	if got := receiveAll(router.RoomAudio()); len(got) != 1 || string(got[0]) != "after-room-1" {
+		t.Fatalf("new room lookback = %q, want only post-transition audio", got)
+	}
+}
+
 func receiveAll[T any](queue <-chan T) []T {
 	var result []T
 	for {

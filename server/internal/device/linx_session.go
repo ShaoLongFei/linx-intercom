@@ -52,7 +52,17 @@ func StartAudioRouting(session *Session) {
 			case <-session.Done:
 				return
 			case frame := <-session.AudioIn:
+				// 与 Join/Leave 共用锁，避免切房间期间把旧缓存送入新房间。
+				session.mediaMu.Lock()
 				transition := session.AudioRouter.Process(frame)
+				inRoom := session.media != nil
+				if inRoom {
+					drainRoutedAudio(session.AudioRouter.RoomAudio(), session.JanusAudioIn, session.DeviceID, session.ID, "Janus")
+				} else {
+					discardAudio(session.AudioRouter.RoomAudio())
+				}
+				drainRoutedAudio(session.AudioRouter.LinxAudio(), session.LinxAudioIn, session.DeviceID, session.ID, "Linx")
+				session.mediaMu.Unlock()
 				if transition == audio.TransitionWakeDetected {
 					slog.Info("wake word detected; switching microphone route", "device_id", session.DeviceID, "session_id", session.ID, "from", "room", "to", "control")
 					clearQueue(session.AudioOut)
@@ -71,15 +81,6 @@ func StartAudioRouting(session *Session) {
 				} else if transition == audio.TransitionDetectionError {
 					slog.Warn("wake-word frame withheld after detector error", "device_id", session.DeviceID, "session_id", session.ID)
 				}
-				session.mediaMu.Lock()
-				inRoom := session.media != nil
-				session.mediaMu.Unlock()
-				if inRoom {
-					drainRoutedAudio(session.AudioRouter.RoomAudio(), session.JanusAudioIn, session.DeviceID, session.ID, "Janus")
-				} else {
-					discardAudio(session.AudioRouter.RoomAudio())
-				}
-				drainRoutedAudio(session.AudioRouter.LinxAudio(), session.LinxAudioIn, session.DeviceID, session.ID, "Linx")
 			case frame := <-session.AudioRouter.JanusDownlink():
 				if session.AudioRouter.Mode() == audio.ModeRoom && session.EnqueueAudioOut(frame) {
 					slog.Warn("device room downlink queue dropped stale frame", "device_id", session.DeviceID, "session_id", session.ID)

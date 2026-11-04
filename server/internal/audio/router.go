@@ -118,6 +118,14 @@ func (r *Router) ClearJanusDownlink() {
 	r.mu.Unlock()
 }
 
+// ClearRoomAudio 在房间切换时丢弃旧房间的待发帧和唤醒词回看缓存。
+func (r *Router) ClearRoomAudio() {
+	r.mu.Lock()
+	r.buffer = nil
+	clearQueue(r.roomAudio)
+	r.mu.Unlock()
+}
+
 func (r *Router) Close() {
 	r.closeOnce.Do(func() {
 		if detector, ok := r.detector.(interface{ Close() }); ok {
