@@ -54,6 +54,12 @@ func (s *Session) EnqueueAudioOut(frame []byte) bool {
 	return enqueueAudio(s.AudioOut, frame)
 }
 
+func (s *Session) ConnectionGeneration() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.generation
+}
+
 func enqueueAudio(queue chan []byte, frame []byte) bool {
 	copyOfFrame := append([]byte(nil), frame...)
 	dropped := false
