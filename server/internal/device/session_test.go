@@ -152,6 +152,27 @@ func TestDisconnectedSessionIsOfflineDuringReconnectGrace(t *testing.T) {
 	}
 }
 
+func TestOnlineSessionResolvesOnlyConnectedUser(t *testing.T) {
+	manager := NewSessionManager(time.Second)
+	session, generation, err := manager.Attach("device-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.OnlineSession(session.UserID); got != nil {
+		t.Fatal("disconnected session was returned as online")
+	}
+	session.mu.Lock()
+	session.conn = &websocket.Conn{}
+	session.mu.Unlock()
+	if got := manager.OnlineSession(session.UserID); got != session {
+		t.Fatal("connected user's session was not resolved")
+	}
+	manager.Disconnect("device-a", generation)
+	if got := manager.OnlineSession(session.UserID); got != nil {
+		t.Fatal("session in reconnect grace was returned as online")
+	}
+}
+
 func TestSessionReconnectClearsStaleAudioAndControlFrames(t *testing.T) {
 	manager := NewSessionManager(time.Second)
 	first, generation, err := manager.Attach("device-a", nil)

@@ -122,9 +122,17 @@ func TestAudioBridgePublishesAndReceivesPCMU(t *testing.T) {
 	url := "ws" + strings.TrimPrefix(server.URL, "http")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	session, err := Join(ctx, Config{WebSocketURL: url, RoomID: 42}, "device-a")
+	joinCtx, cancelJoin := context.WithTimeout(ctx, 10*time.Second)
+	session, err := Join(joinCtx, Config{WebSocketURL: url, RoomID: 42}, "device-a")
 	if err != nil {
+		cancelJoin()
 		t.Fatal(err)
+	}
+	cancelJoin()
+	select {
+	case <-session.janus.done:
+		t.Fatal("request context cancellation closed the active media signaling session")
+	case <-time.After(20 * time.Millisecond):
 	}
 	session.peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) { clientState <- state })
 	input := make(chan []byte, 1)
@@ -174,6 +182,93 @@ func TestJoinRejectsJanusSignalingFailure(t *testing.T) {
 	_, err := Join(context.Background(), Config{WebSocketURL: "ws://127.0.0.1:1", RoomID: 42}, "device-a")
 	if err == nil {
 		t.Fatal("unreachable Janus endpoint accepted")
+	}
+}
+
+func TestEnsureRoomCreatesDynamicRoomOnlyOnce(t *testing.T) {
+	var createCount int
+	var destroyedRoomID uint64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		for {
+			_, payload, err := conn.Read(r.Context())
+			if err != nil {
+				return
+			}
+			var request map[string]json.RawMessage
+			if err := json.Unmarshal(payload, &request); err != nil {
+				t.Errorf("decode Janus request: %v", err)
+				return
+			}
+			var kind, transaction string
+			_ = json.Unmarshal(request["janus"], &kind)
+			_ = json.Unmarshal(request["transaction"], &transaction)
+			switch kind {
+			case "create":
+				writeJanus(t, r.Context(), conn, map[string]any{"janus": "success", "transaction": transaction, "data": map[string]any{"id": 123}})
+			case "attach":
+				writeJanus(t, r.Context(), conn, map[string]any{"janus": "success", "transaction": transaction, "data": map[string]any{"id": 456}})
+			case "message":
+				var body struct {
+					Request     string `json:"request"`
+					Room        uint64 `json:"room"`
+					Description string `json:"description"`
+					Rate        int    `json:"sampling_rate"`
+					AdminKey    string `json:"admin_key"`
+				}
+				if err := json.Unmarshal(request["body"], &body); err != nil {
+					t.Errorf("decode AudioBridge body: %v", err)
+					return
+				}
+				data := map[string]any{"audiobridge": "success", "room": body.Room}
+				if body.Request == "exists" {
+					data["exists"] = createCount > 0
+				} else if body.Request == "create" {
+					createCount++
+					if body.Room != 987 || body.Description != "Kitchen" || body.Rate != 8000 || body.AdminKey != "janus-admin" {
+						t.Errorf("room create body = %+v", body)
+					}
+					data["audiobridge"] = "created"
+				} else if body.Request == "destroy" {
+					destroyedRoomID = body.Room
+					data["audiobridge"] = "destroyed"
+				} else {
+					t.Errorf("unexpected AudioBridge request %q", body.Request)
+					return
+				}
+				writeJanus(t, r.Context(), conn, map[string]any{"janus": "success", "transaction": transaction, "plugindata": map[string]any{"data": data}})
+			case "destroy":
+				writeJanus(t, r.Context(), conn, map[string]any{"janus": "success", "transaction": transaction})
+				return
+			default:
+				t.Errorf("unexpected Janus request %q", kind)
+				return
+			}
+		}
+	}))
+	defer server.Close()
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	config := Config{WebSocketURL: url, AdminKey: "janus-admin"}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := EnsureRoom(ctx, config, 987, "Kitchen"); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureRoom(ctx, config, 987, "Kitchen"); err != nil {
+		t.Fatal(err)
+	}
+	if createCount != 1 {
+		t.Fatalf("room create requests = %d, want 1", createCount)
+	}
+	if err := DestroyRoom(ctx, config, 987); err != nil {
+		t.Fatal(err)
+	}
+	if destroyedRoomID != 987 {
+		t.Fatalf("destroyed room ID = %d, want 987", destroyedRoomID)
 	}
 }
 

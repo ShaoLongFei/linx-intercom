@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -100,7 +102,89 @@ func TestFriendPairingRequiresOwnerConfirmation(t *testing.T) {
 	}
 }
 
+func TestCreateRoomJoinsJanusAndRollsBackWhenJoinFails(t *testing.T) {
+	db, err := store.Open(t.TempDir() + "/room-rollback.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	owner, _ := db.EnsureUser("room-owner")
+	destroyed := false
+	handler := NewHandler(db, nil, "mcp-secret", RoomHooks{
+		Join: func(_ context.Context, userID string, room store.Room) error {
+			if userID != owner || room.JanusID == 0 {
+				t.Fatalf("room join callback identity/mapping = %q/%d", userID, room.JanusID)
+			}
+			return errors.New("fake Janus unavailable")
+		},
+		Destroy: func(_ context.Context, room store.Room) error {
+			destroyed = room.JanusID != 0
+			return nil
+		},
+	})
+	_, isError := callToolResult(t, handler, "room-owner", "create_room", map[string]any{"name": "Kitchen"})
+	if !isError {
+		t.Fatal("room creation succeeded despite media join failure")
+	}
+	rooms, err := db.RoomsForUser(owner)
+	if err != nil || len(rooms) != 0 {
+		t.Fatalf("rooms after failed creation = %+v, %v; want rollback", rooms, err)
+	}
+	if !destroyed {
+		t.Fatal("failed room creation did not request Janus cleanup")
+	}
+}
+
+func TestInvitationAcceptanceRollsBackWhenMediaJoinFails(t *testing.T) {
+	db, err := store.Open(t.TempDir() + "/invite-rollback.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	owner, _ := db.EnsureUser("invite-owner")
+	friend, _ := db.EnsureUser("invite-friend")
+	code, _ := db.CreatePairCode(owner, time.Minute)
+	requestID, err := db.AcceptPairCode(friend, code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ConfirmFriendship(owner, requestID); err != nil {
+		t.Fatal(err)
+	}
+	roomID, err := db.CreateRoom(owner, "Kitchen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	invitationID, err := db.Invite(roomID, owner, friend, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(db, nil, "mcp-secret", RoomHooks{
+		Join: func(context.Context, string, store.Room) error { return errors.New("fake Janus unavailable") },
+	})
+	_, isError := callToolResult(t, handler, "invite-friend", "accept_invitation", map[string]any{"invitation_id": invitationID})
+	if !isError {
+		t.Fatal("invitation acceptance succeeded despite media join failure")
+	}
+	if _, err := db.InvitationRoom(invitationID, friend); err != nil {
+		t.Fatalf("invitation was not returned to pending: %v", err)
+	}
+	members, err := db.RoomMembers(roomID)
+	if err != nil || len(members) != 1 || members[0] != owner {
+		t.Fatalf("room members after failed invite join = %v, %v", members, err)
+	}
+}
+
 func callTool(t *testing.T, handler http.Handler, deviceID, name string, args map[string]any) string {
+	t.Helper()
+	text, isError := callToolResult(t, handler, deviceID, name, args)
+	if isError {
+		t.Fatalf("tool %s failed: %s", name, text)
+	}
+	return text
+}
+
+func callToolResult(t *testing.T, handler http.Handler, deviceID, name string, args map[string]any) (string, bool) {
 	t.Helper()
 	encoded, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": args}})
 	if err != nil {
@@ -125,11 +209,8 @@ func callTool(t *testing.T, handler http.Handler, deviceID, name string, args ma
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Result.IsError {
-		t.Fatalf("tool %s failed: %s", name, rec.Body)
-	}
 	if len(response.Result.Content) == 0 {
-		return ""
+		return "", response.Result.IsError
 	}
-	return response.Result.Content[0].Text
+	return response.Result.Content[0].Text, response.Result.IsError
 }

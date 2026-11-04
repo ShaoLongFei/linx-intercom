@@ -16,6 +16,7 @@ import (
 type Config struct {
 	WebSocketURL string
 	APISecret    string
+	AdminKey     string
 	RoomID       uint64
 	RoomPIN      string
 	ICEServers   []webrtc.ICEServer
@@ -29,6 +30,8 @@ type MediaSession struct {
 	localTrack  *webrtc.TrackLocalStaticSample
 	deviceAudio chan []byte
 	done        chan struct{}
+	ctx         context.Context
+	cancel      context.CancelFunc
 	closeOnce   sync.Once
 }
 
@@ -41,7 +44,7 @@ func Join(ctx context.Context, config Config, deviceID string) (*MediaSession, e
 		return nil, err
 	}
 	fail := func(err error) (*MediaSession, error) {
-		_ = janus.conn.CloseNow()
+		janus.close()
 		return nil, err
 	}
 	var attached struct {
@@ -83,7 +86,8 @@ func Join(ctx context.Context, config Config, deviceID string) (*MediaSession, e
 		_ = peer.Close()
 		return fail(fmt.Errorf("add PCMU audio track: %w", err))
 	}
-	session := &MediaSession{janus: janus, janusID: sessionID, handleID: attached.Data.ID, peer: peer, localTrack: localTrack, deviceAudio: make(chan []byte, 64), done: make(chan struct{})}
+	sessionCtx, sessionCancel := context.WithCancel(context.Background())
+	session := &MediaSession{janus: janus, janusID: sessionID, handleID: attached.Data.ID, peer: peer, localTrack: localTrack, deviceAudio: make(chan []byte, 64), done: make(chan struct{}), ctx: sessionCtx, cancel: sessionCancel}
 	peer.OnTrack(session.receiveTrack)
 	connected := make(chan struct{})
 	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
@@ -145,7 +149,7 @@ func Join(ctx context.Context, config Config, deviceID string) (*MediaSession, e
 		return fail(fmt.Errorf("Janus WebRTC connection timeout (state %s)", peer.ConnectionState()))
 	case <-connected:
 	}
-	go session.keepalive(ctx)
+	go session.keepalive(session.ctx)
 	slog.Info("Janus AudioBridge participant joined", "device_id", deviceID, "room_id", config.RoomID, "janus_session_id", sessionID)
 	return session, nil
 }
@@ -178,6 +182,7 @@ func (s *MediaSession) Close() error {
 	var closeErr error
 	s.closeOnce.Do(func() {
 		close(s.done)
+		s.cancel()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		err := s.janus.exchange(ctx, map[string]any{
@@ -199,7 +204,7 @@ func (s *MediaSession) Close() error {
 		if err := s.peer.Close(); err != nil && closeErr == nil {
 			closeErr = err
 		}
-		_ = s.janus.conn.CloseNow()
+		s.janus.close()
 		slog.Info("Janus media session released", "janus_session_id", s.janusID, "handle_id", s.handleID)
 	})
 	return closeErr

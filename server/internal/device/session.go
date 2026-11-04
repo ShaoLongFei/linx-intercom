@@ -32,11 +32,14 @@ type Session struct {
 	AudioRouter   *audio.Router
 	Done          <-chan struct{}
 
-	mu         sync.Mutex
-	conn       *websocket.Conn
-	generation uint64
-	timer      *time.Timer
-	cancel     context.CancelFunc
+	mu          sync.Mutex
+	conn        *websocket.Conn
+	generation  uint64
+	timer       *time.Timer
+	cancel      context.CancelFunc
+	mediaJoinMu sync.Mutex
+	mediaMu     sync.Mutex
+	media       *roomMediaBinding
 }
 
 func newSession(deviceID, userID string, queueSize int) *Session {
@@ -268,6 +271,7 @@ func (m *SessionManager) expire(deviceID string, expected *Session, generation u
 	session.mu.Unlock()
 	m.mu.Unlock()
 	session.cancel()
+	LeaveMedia(session)
 	m.logger.Info("device session expired", "device_id", deviceID, "session_id", session.ID)
 }
 
@@ -281,6 +285,23 @@ func (m *SessionManager) Current(deviceID string) *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.sessions[deviceID]
+}
+
+func (m *SessionManager) OnlineSession(userID string) *Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, session := range m.sessions {
+		if session.UserID != userID {
+			continue
+		}
+		session.mu.Lock()
+		connected := session.conn != nil
+		session.mu.Unlock()
+		if connected {
+			return session
+		}
+	}
+	return nil
 }
 
 func (m *SessionManager) closeConnection(deviceID string, generation uint64) {

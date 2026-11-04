@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -19,10 +20,19 @@ type Handler struct {
 	store  *store.Store
 	online OnlineFunc
 	token  string
+	rooms  RoomHooks
 }
 
-func NewHandler(db *store.Store, online OnlineFunc, token string) http.Handler {
+type RoomHooks struct {
+	Join    func(context.Context, string, store.Room) error
+	Destroy func(context.Context, store.Room) error
+}
+
+func NewHandler(db *store.Store, online OnlineFunc, token string, roomHooks ...RoomHooks) http.Handler {
 	h := &Handler{store: db, online: online, token: token}
+	if len(roomHooks) > 0 {
+		h.rooms = roomHooks[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /mcp", h.sse)
 	mux.HandleFunc("POST /mcp/message", h.message)
@@ -103,7 +113,7 @@ func (h *Handler) message(w http.ResponseWriter, r *http.Request) {
 		// 不记录 arguments：参数中可能有一次性配对码等不适合进入日志的内容。
 		slog.Info("MCP tool call started", "device_id", deviceID, "user_id", userID, "tool", request.Params.Name)
 	}
-	result, err := h.call(request, userID)
+	result, err := h.call(r.Context(), request, userID)
 	if err != nil {
 		slog.Warn("MCP tool call failed", "device_id", deviceID, "tool", request.Params.Name, "error", err)
 		result.IsError = true
@@ -128,7 +138,7 @@ func (h *Handler) authorized(r *http.Request) bool {
 	return len(token) == len(h.token) && subtle.ConstantTimeCompare([]byte(token), []byte(h.token)) == 1
 }
 
-func (h *Handler) call(request rpcRequest, userID string) (toolResult, error) {
+func (h *Handler) call(ctx context.Context, request rpcRequest, userID string) (toolResult, error) {
 	if request.Method == "tools/list" {
 		return toolResult{Tools: []toolSpec{
 			{Name: "create_room", Description: "创建语音对讲房间", InputSchema: objectSchema(map[string]any{"name": stringSchema("房间名称")})},
@@ -155,6 +165,27 @@ func (h *Handler) call(request rpcRequest, userID string) (toolResult, error) {
 		if err != nil {
 			return toolResult{}, err
 		}
+		room, err := h.store.GetRoom(roomID)
+		if err != nil {
+			return toolResult{}, err
+		}
+		if h.rooms.Join != nil {
+			if err := h.rooms.Join(ctx, userID, room); err != nil {
+				failure := fmt.Errorf("create or join audio room: %w", err)
+				if h.rooms.Destroy != nil {
+					if destroyErr := h.rooms.Destroy(ctx, room); destroyErr != nil {
+						slog.Error("failed to clean up Janus room after create failure", "room_id", room.ID, "error", destroyErr)
+						failure = fmt.Errorf("%w (Janus cleanup failed: %v)", failure, destroyErr)
+					}
+				}
+				if deleteErr := h.store.DeleteRoom(room.ID); deleteErr != nil {
+					slog.Error("failed to roll back room creation", "room_id", room.ID, "error", deleteErr)
+					failure = fmt.Errorf("%w (database rollback failed: %v)", failure, deleteErr)
+				}
+				return toolResult{}, failure
+			}
+		}
+		slog.Info("intercom room created", "room_id", room.ID, "janus_room_id", room.JanusID, "owner_id", userID)
 		return textContent(fmt.Sprintf("房间已创建，编号 %s", roomID)), nil
 	case "pair_friend":
 		code, err := h.store.CreatePairCode(userID, 5*time.Minute)
@@ -210,9 +241,24 @@ func (h *Handler) call(request rpcRequest, userID string) (toolResult, error) {
 		if err != nil {
 			return toolResult{}, err
 		}
+		room, err := h.store.InvitationRoom(invitationID, userID)
+		if err != nil {
+			return toolResult{}, err
+		}
 		if err := h.store.AcceptInvitation(invitationID, userID); err != nil {
 			return toolResult{}, err
 		}
+		if h.rooms.Join != nil {
+			if err := h.rooms.Join(ctx, userID, room); err != nil {
+				failure := fmt.Errorf("join invited audio room: %w", err)
+				if rollbackErr := h.store.RollbackInvitationAcceptance(invitationID, userID); rollbackErr != nil {
+					slog.Error("failed to roll back room invitation acceptance", "invitation_id", invitationID, "room_id", room.ID, "error", rollbackErr)
+					failure = fmt.Errorf("%w (invitation rollback failed: %v)", failure, rollbackErr)
+				}
+				return toolResult{}, failure
+			}
+		}
+		slog.Info("device accepted room invitation", "room_id", room.ID, "user_id", userID)
 		return textContent("已加入房间"), nil
 	case "list_online_members":
 		roomID, err := stringArg(args, "room_id")

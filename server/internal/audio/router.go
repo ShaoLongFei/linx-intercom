@@ -122,6 +122,12 @@ func (r *Router) EnqueueLinxDownlink(frame []byte) {
 	}
 }
 
+func (r *Router) ClearJanusDownlink() {
+	r.mu.Lock()
+	clearQueue(r.janusDownlink)
+	r.mu.Unlock()
+}
+
 func (r *Router) enqueue(queue chan []byte, frame []byte, name string) {
 	copyOfFrame := append([]byte(nil), frame...)
 	select {

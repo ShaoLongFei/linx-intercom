@@ -15,6 +15,7 @@ type ControlMessage struct {
 	State     string `json:"state,omitempty"`
 	Mode      string `json:"mode,omitempty"`
 	RequestID string `json:"request_id,omitempty"`
+	RoomID    string `json:"room_id,omitempty"`
 	Text      string `json:"text,omitempty"`
 }
 

@@ -15,6 +15,7 @@ import (
 	"linx-intercom/server/internal/device"
 	"linx-intercom/server/internal/linx"
 	"linx-intercom/server/internal/mcp"
+	"linx-intercom/server/internal/media"
 	"linx-intercom/server/internal/store"
 )
 
@@ -71,7 +72,34 @@ func main() {
 	if mcpToken == "" {
 		logger.Warn("MCP_API_TOKEN is unset; MCP endpoints will reject requests")
 	}
-	mcpHandler := mcp.NewHandler(db, func(userID string) bool { return sessions.IsUserOnline(userID) }, mcpToken)
+	janusConfig := media.Config{
+		WebSocketURL: os.Getenv("JANUS_WS_URL"),
+		APISecret:    os.Getenv("JANUS_API_SECRET"),
+		AdminKey:     os.Getenv("JANUS_ADMIN_KEY"),
+	}
+	if janusConfig.WebSocketURL == "" {
+		logger.Warn("JANUS_WS_URL is unset; room creation and joining will fail")
+	}
+	mcpHandler := mcp.NewHandler(db, func(userID string) bool { return sessions.IsUserOnline(userID) }, mcpToken, mcp.RoomHooks{
+		Join: func(ctx context.Context, userID string, room store.Room) error {
+			session := sessions.OnlineSession(userID)
+			if session == nil {
+				return errors.New("device session is offline")
+			}
+			joinCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			if err := device.JoinMedia(joinCtx, session, janusConfig, room); err != nil {
+				logger.Error("device room join failed", "device_id", session.DeviceID, "session_id", session.ID, "room_id", room.ID, "janus_room_id", room.JanusID, "error", err)
+				return err
+			}
+			return nil
+		},
+		Destroy: func(ctx context.Context, room store.Room) error {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			return media.DestroyRoom(cleanupCtx, janusConfig, room.JanusID)
+		},
+	})
 	mux.Handle("GET /mcp", mcpHandler)
 	mux.Handle("POST /mcp/message", mcpHandler)
 

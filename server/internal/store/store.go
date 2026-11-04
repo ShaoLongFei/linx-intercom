@@ -22,6 +22,7 @@ type Room struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	OwnerID string `json:"owner_id"`
+	JanusID uint64 `json:"janus_id"`
 }
 
 type PairingRequest struct {
@@ -39,6 +40,7 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(`PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, device_id TEXT UNIQUE NOT NULL);
 CREATE TABLE IF NOT EXISTS rooms (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_id TEXT NOT NULL REFERENCES users(id));
+CREATE TABLE IF NOT EXISTS janus_rooms (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT UNIQUE NOT NULL REFERENCES rooms(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS room_members (room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id), PRIMARY KEY(room_id, user_id));
 CREATE TABLE IF NOT EXISTS pair_codes (code TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS friend_pairings (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), requester_id TEXT NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL);
@@ -46,6 +48,10 @@ CREATE TABLE IF NOT EXISTS friendships (user_a TEXT NOT NULL REFERENCES users(id
 CREATE TABLE IF NOT EXISTS invitations (id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, inviter_id TEXT NOT NULL REFERENCES users(id), invitee_id TEXT NOT NULL REFERENCES users(id), status TEXT NOT NULL, created_at INTEGER NOT NULL);`); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize sqlite schema: %w", err)
+	}
+	if err := store.migrateJanusRoomIDs(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate Janus room mappings: %w", err)
 	}
 	return store, nil
 }
@@ -86,6 +92,9 @@ func (s *Store) CreateRoom(ownerID, name string) (string, error) {
 	if _, err := tx.Exec(`INSERT INTO rooms(id, name, owner_id) VALUES(?, ?, ?)`, id, name, ownerID); err != nil {
 		return "", fmt.Errorf("create room: %w", err)
 	}
+	if _, err := tx.Exec(`INSERT INTO janus_rooms(room_id) VALUES(?)`, id); err != nil {
+		return "", fmt.Errorf("allocate Janus room ID: %w", err)
+	}
 	if _, err := tx.Exec(`INSERT INTO room_members(room_id, user_id) VALUES(?, ?)`, id, ownerID); err != nil {
 		return "", fmt.Errorf("add room owner: %w", err)
 	}
@@ -95,9 +104,14 @@ func (s *Store) CreateRoom(ownerID, name string) (string, error) {
 	return id, nil
 }
 
+func (s *Store) DeleteRoom(roomID string) error {
+	_, err := s.db.Exec(`DELETE FROM rooms WHERE id = ?`, roomID)
+	return err
+}
+
 func (s *Store) GetRoom(roomID string) (Room, error) {
 	var room Room
-	err := s.db.QueryRow(`SELECT id, name, owner_id FROM rooms WHERE id = ?`, roomID).Scan(&room.ID, &room.Name, &room.OwnerID)
+	err := s.db.QueryRow(`SELECT r.id, r.name, r.owner_id, j.id FROM rooms r JOIN janus_rooms j ON j.room_id = r.id WHERE r.id = ?`, roomID).Scan(&room.ID, &room.Name, &room.OwnerID, &room.JanusID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Room{}, ErrNotFound
 	}
@@ -146,6 +160,37 @@ func (s *Store) AcceptInvitation(invitationID, userID string) error {
 	return tx.Commit()
 }
 
+func (s *Store) InvitationRoom(invitationID, userID string) (Room, error) {
+	var room Room
+	err := s.db.QueryRow(`SELECT r.id, r.name, r.owner_id, j.id FROM invitations i JOIN rooms r ON r.id = i.room_id JOIN janus_rooms j ON j.room_id = r.id WHERE i.id = ? AND i.invitee_id = ? AND i.status = 'pending'`, invitationID, userID).Scan(&room.ID, &room.Name, &room.OwnerID, &room.JanusID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Room{}, ErrNotFound
+	}
+	return room, err
+}
+
+func (s *Store) RollbackInvitationAcceptance(invitationID, userID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var roomID string
+	if err := tx.QueryRow(`SELECT room_id FROM invitations WHERE id = ? AND invitee_id = ? AND status = 'accepted'`, invitationID, userID).Scan(&roomID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM room_members WHERE room_id = ? AND user_id = ?`, roomID, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE invitations SET status = 'pending' WHERE id = ?`, invitationID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) RoomMembers(roomID string) ([]string, error) {
 	rows, err := s.db.Query(`SELECT user_id FROM room_members WHERE room_id = ? ORDER BY user_id`, roomID)
 	if err != nil {
@@ -164,7 +209,7 @@ func (s *Store) RoomMembers(roomID string) ([]string, error) {
 }
 
 func (s *Store) RoomsForUser(userID string) ([]Room, error) {
-	rows, err := s.db.Query(`SELECT r.id, r.name, r.owner_id FROM rooms r JOIN room_members m ON m.room_id = r.id WHERE m.user_id = ? ORDER BY r.name`, userID)
+	rows, err := s.db.Query(`SELECT r.id, r.name, r.owner_id, j.id FROM rooms r JOIN room_members m ON m.room_id = r.id JOIN janus_rooms j ON j.room_id = r.id WHERE m.user_id = ? ORDER BY r.name`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -172,12 +217,41 @@ func (s *Store) RoomsForUser(userID string) ([]Room, error) {
 	var rooms []Room
 	for rows.Next() {
 		var room Room
-		if err := rows.Scan(&room.ID, &room.Name, &room.OwnerID); err != nil {
+		if err := rows.Scan(&room.ID, &room.Name, &room.OwnerID, &room.JanusID); err != nil {
 			return nil, err
 		}
 		rooms = append(rooms, room)
 	}
 	return rooms, rows.Err()
+}
+
+func (s *Store) migrateJanusRoomIDs() error {
+	rows, err := s.db.Query(`SELECT r.id FROM rooms r LEFT JOIN janus_rooms j ON j.room_id = r.id WHERE j.room_id IS NULL`)
+	if err != nil {
+		return err
+	}
+	var roomIDs []string
+	for rows.Next() {
+		var roomID string
+		if err := rows.Scan(&roomID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		roomIDs = append(roomIDs, roomID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, roomID := range roomIDs {
+		if _, err := s.db.Exec(`INSERT INTO janus_rooms(room_id) VALUES(?)`, roomID); err != nil {
+			return fmt.Errorf("assign Janus room ID for %s: %w", roomID, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) CreatePairCode(ownerID string, ttl time.Duration) (string, error) {
