@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/coder/websocket"
+	"linx-intercom/server/internal/websocketurl"
 )
 
 type Client struct {
@@ -41,6 +42,9 @@ type protocolMessage struct {
 func (c Client) Run(ctx context.Context, deviceID string, audioIn <-chan []byte, eventsIn <-chan json.RawMessage, results chan<- Result) error {
 	if c.URL == "" || c.Token == "" || deviceID == "" {
 		return errors.New("Linx URL, token, and device ID are required")
+	}
+	if err := websocketurl.Validate(c.URL); err != nil {
+		return fmt.Errorf("invalid Linx websocket URL: %w", err)
 	}
 	clientID := c.ClientID
 	if clientID == "" {

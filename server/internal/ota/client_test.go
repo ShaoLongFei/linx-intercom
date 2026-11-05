@@ -120,6 +120,7 @@ func TestReportRejectsInvalidResponses(t *testing.T) {
 		{name: "missing activation or credentials", statusCode: http.StatusOK, body: `{}`},
 		{name: "token without URL", statusCode: http.StatusOK, body: `{"websocket":{"token":"secret"}}`},
 		{name: "URL without token or activation", statusCode: http.StatusOK, body: `{"websocket":{"url":"wss://linx.example/ws"}}`},
+		{name: "remote plaintext websocket credentials", statusCode: http.StatusOK, body: `{"websocket":{"url":"ws://linx.example/ws","token":"secret"}}`},
 		{name: "invalid JSON", statusCode: http.StatusOK, body: `{`},
 		{name: "server failure", statusCode: http.StatusInternalServerError, body: `{"error":"internal"}`},
 	}

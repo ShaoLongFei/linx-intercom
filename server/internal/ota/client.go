@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"linx-intercom/server/internal/websocketurl"
 )
 
 const (
@@ -183,6 +185,11 @@ func (c *Client) Report(ctx context.Context, deviceID, clientID, userAgent strin
 		ActivationCode: result.Activation.Code,
 		WebSocketURL:   result.WebSocket.URL,
 		WebSocketToken: result.WebSocket.Token,
+	}
+	if binding.WebSocketURL != "" {
+		if err := websocketurl.Validate(binding.WebSocketURL); err != nil {
+			return Binding{}, fmt.Errorf("Linx OTA returned invalid WebSocket URL: %w", err)
+		}
 	}
 	if binding.WebSocketURL != "" && binding.WebSocketToken != "" {
 		return binding, nil

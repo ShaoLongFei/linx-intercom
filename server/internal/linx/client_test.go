@@ -81,6 +81,14 @@ func TestClientAuthenticatesNegotiatesAndRoutesAudio(t *testing.T) {
 	}
 }
 
+func TestClientRejectsRemotePlaintextURLBeforeDial(t *testing.T) {
+	client := Client{URL: "ws://linx.example/device", Token: "secret"}
+	err := client.Run(context.Background(), "device-a", make(chan []byte), nil, make(chan Result))
+	if err == nil || !strings.Contains(err.Error(), "remote websocket URL must use wss") {
+		t.Fatalf("Run() error = %v, want remote plaintext URL rejection", err)
+	}
+}
+
 func TestClientSurfacesAuthenticationFailure(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
