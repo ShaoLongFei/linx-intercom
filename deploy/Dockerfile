@@ -15,7 +15,7 @@ RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/intercom-server ./
 
 FROM debian:bookworm-slim
 RUN groupadd --system intercom && useradd --system --gid intercom intercom && apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libgomp1 libstdc++6 \
+    && apt-get install -y --no-install-recommends ca-certificates espeak-ng libgomp1 libstdc++6 \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/lib/intercom \
     && chown intercom:intercom /var/lib/intercom
