@@ -167,7 +167,7 @@
 - `bash deploy/smoke-test.sh` 在 `docker info` 阶段退出：本机没有 Docker daemon socket，未创建容器或临时 Compose 项目；Docker 环境可用后仍需执行此项。
 - `idf.py` 和宿主 `espeak-ng` 均未安装；ESP-IDF 固件构建及真实普通话合成/硬件播放尚未验证。`espeak-ng` fake executable 测试通过。
 - 代码审查发现的远程明文 WebSocket 凭证风险已由 `24e115b` 修复；OTA 和 Linx 连接端都校验 URL，远程地址必须使用 `wss://`。
-- 实现、TLS 修复、会话耗时日志补强和 ESP32-S3 板级基线均已推送；远端 `origin/main` 当前为 `43eb3b8`。
+- 实现、TLS 修复、会话耗时日志补强和 ESP32-S3 板级基线均已推送；远端 `origin/main` 当前为 `903471c`。
 
 ## 完成验收
 
