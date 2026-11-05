@@ -136,7 +136,7 @@ func writeMessages(ctx context.Context, session *Session, conn *websocket.Conn) 
 		case <-session.Done:
 			return
 		case message := <-session.AudioOut:
-			if message.mode != session.AudioRouter.Mode() {
+			if !message.force && message.mode != session.AudioRouter.Mode() {
 				continue
 			}
 			if message.event != nil {

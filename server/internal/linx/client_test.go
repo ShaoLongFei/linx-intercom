@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -81,14 +82,32 @@ func TestClientAuthenticatesNegotiatesAndRoutesAudio(t *testing.T) {
 }
 
 func TestClientSurfacesAuthenticationFailure(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "denied", status)
+			}))
+			defer server.Close()
+			client := Client{URL: "ws" + strings.TrimPrefix(server.URL, "http"), Token: "bad"}
+			err := client.Run(context.Background(), "device-a", make(chan []byte), make(chan json.RawMessage), make(chan Result))
+			var authErr *AuthError
+			if !errors.As(err, &authErr) || authErr.StatusCode != status {
+				t.Fatalf("authentication error = %v, want typed status %d", err, status)
+			}
+		})
+	}
+}
+
+func TestClientKeepsOtherHandshakeFailuresOrdinary(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		http.Error(w, "temporary", http.StatusBadGateway)
 	}))
 	defer server.Close()
-	client := Client{URL: "ws" + strings.TrimPrefix(server.URL, "http"), Token: "bad"}
+	client := Client{URL: "ws" + strings.TrimPrefix(server.URL, "http"), Token: "token"}
 	err := client.Run(context.Background(), "device-a", make(chan []byte), make(chan json.RawMessage), make(chan Result))
-	if err == nil {
-		t.Fatal("authentication failure was ignored")
+	var authErr *AuthError
+	if err == nil || errors.As(err, &authErr) {
+		t.Fatalf("HTTP 502 error = %v, auth=%+v", err, authErr)
 	}
 }
 

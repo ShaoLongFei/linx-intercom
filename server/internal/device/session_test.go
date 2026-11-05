@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -227,7 +228,7 @@ func TestDeviceInfoUsesSessionChannelAndInvalidIdentityKeepsConnection(t *testin
 }
 
 func TestDeviceAudioLogsContainRecoverableBase64Frames(t *testing.T) {
-	var logs bytes.Buffer
+	var logs synchronizedBuffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
 	defer slog.SetDefault(previous)
@@ -272,6 +273,10 @@ func TestDeviceAudioLogsContainRecoverableBase64Frames(t *testing.T) {
 	if _, _, err := conn.Read(ctx); err != nil {
 		t.Fatal(err)
 	}
+	deadline = time.Now().Add(time.Second)
+	for !strings.Contains(logs.String(), base64.StdEncoding.EncodeToString(downlink)) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
 	for _, frame := range [][]byte{uplink, downlink} {
 		encoded := base64.StdEncoding.EncodeToString(frame)
 		if !strings.Contains(logs.String(), encoded) {
@@ -296,6 +301,23 @@ func TestSessionDeviceInfoKeepsOnlyLatestMetadata(t *testing.T) {
 	if len(session.DeviceInfo) != 0 {
 		t.Fatalf("device metadata queue retained %d stale values", len(session.DeviceInfo))
 	}
+}
+
+type synchronizedBuffer struct {
+	mu sync.Mutex
+	bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.Write(data)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.String()
 }
 
 func TestSessionReconnectWithinGracePreservesSessionAndUser(t *testing.T) {

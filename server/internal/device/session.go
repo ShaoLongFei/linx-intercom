@@ -39,14 +39,16 @@ type Session struct {
 	AudioRouter  *audio.Router
 	Done         <-chan struct{}
 
-	mu          sync.Mutex
-	conn        *websocket.Conn
-	generation  uint64
-	timer       *time.Timer
-	cancel      context.CancelFunc
-	mediaJoinMu sync.Mutex
-	mediaMu     sync.Mutex
-	media       *roomMediaBinding
+	mu             sync.Mutex
+	conn           *websocket.Conn
+	generation     uint64
+	timer          *time.Timer
+	cancel         context.CancelFunc
+	mediaJoinMu    sync.Mutex
+	mediaMu        sync.Mutex
+	media          *roomMediaBinding
+	activationOnce sync.Once
+	linxPumpsOnce  sync.Once
 	// 仅在本轮正常 TTS 停止后接受设备确认，避免重连重放的旧确认切回房间。
 	awaitingPlaybackDrain atomic.Bool
 }
@@ -97,6 +99,7 @@ type downlinkMessage struct {
 	audio []byte
 	event *ControlMessage
 	mode  audio.Mode
+	force bool
 }
 
 func (s *Session) ConnectionGeneration() uint64 {

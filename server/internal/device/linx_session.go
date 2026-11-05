@@ -20,8 +20,7 @@ func StartLinxSession(session *Session, client linx.Client) {
 		case <-ctx.Done():
 		}
 	}()
-	go forwardDeviceEvents(ctx, session)
-	go forwardLinxResults(ctx, session)
+	startLinxPumps(ctx, session)
 	go func() {
 		defer cancel()
 		backoff := time.Second
@@ -43,6 +42,13 @@ func StartLinxSession(session *Session, client linx.Client) {
 			backoff = min(backoff*2, 30*time.Second)
 		}
 	}()
+}
+
+func startLinxPumps(ctx context.Context, session *Session) {
+	session.linxPumpsOnce.Do(func() {
+		go forwardDeviceEvents(ctx, session)
+		go forwardLinxResults(ctx, session)
+	})
 }
 
 func StartAudioRouting(session *Session) {

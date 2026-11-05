@@ -18,6 +18,14 @@ type Client struct {
 	AudioFormat string
 }
 
+type AuthError struct {
+	StatusCode int
+}
+
+func (e *AuthError) Error() string {
+	return fmt.Sprintf("Linx websocket authentication failed with HTTP %d", e.StatusCode)
+}
+
 // 二进制音频与状态事件共用一条队列，保持 WebSocket 接收顺序。
 type Result struct {
 	Audio []byte
@@ -47,6 +55,9 @@ func (c Client) Run(ctx context.Context, deviceID string, audioIn <-chan []byte,
 	conn, response, err := websocket.Dial(ctx, c.URL, &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
 		if response != nil {
+			if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+				return fmt.Errorf("connect Linx websocket: %w", &AuthError{StatusCode: response.StatusCode})
+			}
 			return fmt.Errorf("connect Linx websocket: status %d", response.StatusCode)
 		}
 		return fmt.Errorf("connect Linx websocket: %w", err)

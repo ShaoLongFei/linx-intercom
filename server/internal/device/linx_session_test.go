@@ -5,15 +5,18 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 	"linx-intercom/server/internal/audio"
 	"linx-intercom/server/internal/linx"
+	"linx-intercom/server/internal/ota"
 )
 
 type wakeImmediately struct{}
@@ -380,5 +383,366 @@ func TestRoomWakeLinxTTSRoomRouteEndToEnd(t *testing.T) {
 	kind, payload, err = deviceConn.Read(ctx)
 	if err != nil || kind != websocket.MessageBinary || !bytes.Equal(payload, roomDownlink) {
 		t.Fatalf("room audio did not resume after TTS completion: kind=%v err=%v", kind, err)
+	}
+}
+
+func TestOTADeviceSessionSpeaksPendingCodeThenConnectsWithBoundCredentials(t *testing.T) {
+	const deviceID = "AA:BB:CC:DD:EE:FF"
+	token := make(chan string, 1)
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token <- r.Header.Get("Authorization")
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		if _, _, err := conn.Read(r.Context()); err != nil {
+			return
+		}
+		_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"hello","transport":"websocket","audio_params":{"format":"pcm","sample_rate":16000,"channels":1}}`))
+		<-r.Context().Done()
+	}))
+	defer peer.Close()
+
+	var reports, checks atomic.Int32
+	provider := activationTestProvider{
+		report: func(context.Context, string, string, string, ota.DeviceInfo) (ota.Binding, error) {
+			if reports.Add(1) == 1 {
+				return ota.Binding{ActivationCode: "123456"}, nil
+			}
+			return ota.Binding{WebSocketURL: "ws" + strings.TrimPrefix(peer.URL, "http"), WebSocketToken: "linx-bound-token"}, nil
+		},
+		check: func(context.Context, string) (bool, error) {
+			if checks.Add(1) == 1 {
+				return false, errors.New("temporary OTA timeout")
+			}
+			return checks.Load() >= 3, nil
+		},
+	}
+	speaker := &activationTestSpeaker{frames: [][]byte{bytes.Repeat([]byte{0x55}, 640)}, called: make(chan string, 4)}
+	session := newSession(deviceID, "user-a", 64)
+	defer session.cancel()
+	session.LinxClientID = "persisted-client-id"
+	session.DeviceInfo <- activationTestDeviceInfo(deviceID)
+	startOTADeviceSession(session, provider, speaker, activationTiming{
+		retryInitial: 2 * time.Millisecond, retryMax: 8 * time.Millisecond,
+		pollInitial: 2 * time.Millisecond, pollMax: 8 * time.Millisecond,
+		promptInterval: 100 * time.Millisecond,
+	})
+
+	select {
+	case code := <-speaker.called:
+		if code != "123456" {
+			t.Fatalf("spoken activation code = %q", code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending activation code was not spoken")
+	}
+	select {
+	case frame := <-session.AudioOut:
+		if !frame.force || !bytes.Equal(frame.audio, speaker.frames[0]) {
+			t.Fatalf("activation audio downlink = %+v", frame)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("activation audio was not queued for the device")
+	}
+	select {
+	case got := <-token:
+		if got != "Bearer linx-bound-token" {
+			t.Fatalf("Linx auth header = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("bound OTA credentials did not start Linx websocket")
+	}
+	if reports.Load() != 2 || checks.Load() < 3 {
+		t.Fatalf("OTA reports=%d checks=%d, want 2 reports and continued activation checks", reports.Load(), checks.Load())
+	}
+}
+
+func TestOTADeviceSessionRefreshesCredentialsAfterLinxAuthenticationFailure(t *testing.T) {
+	const deviceID = "AA:BB:CC:DD:EE:FF"
+	var reports atomic.Int32
+	connected := make(chan string, 2)
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth == "Bearer expired-token" {
+			http.Error(w, "expired", http.StatusUnauthorized)
+			return
+		}
+		connected <- auth
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		if _, _, err := conn.Read(r.Context()); err != nil {
+			return
+		}
+		_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"hello","transport":"websocket","audio_params":{"format":"pcm","sample_rate":16000,"channels":1}}`))
+		<-r.Context().Done()
+	}))
+	defer peer.Close()
+	provider := activationTestProvider{
+		report: func(context.Context, string, string, string, ota.DeviceInfo) (ota.Binding, error) {
+			if reports.Add(1) == 1 {
+				return ota.Binding{WebSocketURL: "ws" + strings.TrimPrefix(peer.URL, "http"), WebSocketToken: "expired-token"}, nil
+			}
+			return ota.Binding{WebSocketURL: "ws" + strings.TrimPrefix(peer.URL, "http"), WebSocketToken: "fresh-token"}, nil
+		},
+		check: func(context.Context, string) (bool, error) { return false, errors.New("unexpected activation check") },
+	}
+	session := newSession(deviceID, "user-a", 8)
+	defer session.cancel()
+	session.LinxClientID = "client-a"
+	session.DeviceInfo <- activationTestDeviceInfo(deviceID)
+	startOTADeviceSession(session, provider, &activationTestSpeaker{}, shortActivationTiming())
+	select {
+	case auth := <-connected:
+		if auth != "Bearer fresh-token" {
+			t.Fatalf("connected with refreshed token = %q", auth)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Linx auth failure did not refresh OTA credentials")
+	}
+	if got := reports.Load(); got != 2 {
+		t.Fatalf("OTA report calls = %d, want 2", got)
+	}
+}
+
+func TestOTADeviceSessionRetriesTransientLinxFailureWithSameCredentials(t *testing.T) {
+	const deviceID = "AA:BB:CC:DD:EE:FF"
+	var reports atomic.Int32
+	var connections atomic.Int32
+	secondConnection := make(chan struct{}, 1)
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer stable-token" {
+			t.Errorf("Linx token changed on transient reconnect: %q", r.Header.Get("Authorization"))
+		}
+		attempt := connections.Add(1)
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		if _, _, err := conn.Read(r.Context()); err != nil {
+			return
+		}
+		_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"hello","transport":"websocket","audio_params":{"format":"pcm","sample_rate":16000,"channels":1}}`))
+		if attempt == 1 {
+			return
+		}
+		secondConnection <- struct{}{}
+		<-r.Context().Done()
+	}))
+	defer peer.Close()
+	provider := activationTestProvider{
+		report: func(context.Context, string, string, string, ota.DeviceInfo) (ota.Binding, error) {
+			reports.Add(1)
+			return ota.Binding{WebSocketURL: "ws" + strings.TrimPrefix(peer.URL, "http"), WebSocketToken: "stable-token"}, nil
+		},
+		check: func(context.Context, string) (bool, error) { return false, errors.New("unexpected activation check") },
+	}
+	session := newSession(deviceID, "user-a", 8)
+	defer session.cancel()
+	session.LinxClientID = "client-a"
+	session.DeviceInfo <- activationTestDeviceInfo(deviceID)
+	startOTADeviceSession(session, provider, &activationTestSpeaker{}, shortActivationTiming())
+	select {
+	case <-secondConnection:
+	case <-time.After(time.Second):
+		t.Fatal("transient Linx failure was not retried")
+	}
+	if got := reports.Load(); got != 1 {
+		t.Fatalf("OTA report calls = %d, want to reuse current credentials", got)
+	}
+}
+
+func TestOTADeviceSessionsKeepActivationAndAudioIsolated(t *testing.T) {
+	type result struct {
+		deviceID string
+		code     string
+		frame    byte
+	}
+	results := make(chan result, 2)
+	sessions := []*Session{
+		newSession("AA:BB:CC:DD:EE:01", "user-a", 8),
+		newSession("AA:BB:CC:DD:EE:02", "user-b", 8),
+	}
+	codes := map[string]string{
+		sessions[0].DeviceID: "111111",
+		sessions[1].DeviceID: "222222",
+	}
+	for _, session := range sessions {
+		session := session
+		session.DeviceInfo <- activationTestDeviceInfo(session.DeviceID)
+		provider := activationTestProvider{
+			report: func(_ context.Context, deviceID, _, _ string, _ ota.DeviceInfo) (ota.Binding, error) {
+				return ota.Binding{ActivationCode: codes[deviceID]}, nil
+			},
+			check: func(context.Context, string) (bool, error) { return false, nil },
+		}
+		speaker := &activationTestSpeaker{
+			frames: [][]byte{bytes.Repeat([]byte{byte(len(codes[session.DeviceID])) + session.DeviceID[len(session.DeviceID)-1]}, 640)},
+			called: make(chan string, 1),
+		}
+		go func() {
+			code := <-speaker.called
+			frame := <-session.AudioOut
+			results <- result{deviceID: session.DeviceID, code: code, frame: frame.audio[0]}
+		}()
+		startOTADeviceSession(session, provider, speaker, shortActivationTiming())
+		startOTADeviceSession(session, provider, speaker, shortActivationTiming())
+	}
+	defer sessions[0].cancel()
+	defer sessions[1].cancel()
+	seen := make(map[string]result)
+	for range 2 {
+		select {
+		case got := <-results:
+			seen[got.deviceID] = got
+		case <-time.After(time.Second):
+			t.Fatal("device did not receive its own activation prompt")
+		}
+	}
+	for _, session := range sessions {
+		got := seen[session.DeviceID]
+		wantCode := codes[session.DeviceID]
+		wantFrame := byte(len(wantCode)) + session.DeviceID[len(session.DeviceID)-1]
+		if got.code != wantCode || got.frame != wantFrame {
+			t.Fatalf("device %s received code=%s frame=%x, want code=%s frame=%x", session.DeviceID, got.code, got.frame, wantCode, wantFrame)
+		}
+	}
+}
+
+func TestActivationSessionCancelsPollingWhenSessionExpires(t *testing.T) {
+	const deviceID = "AA:BB:CC:DD:EE:FF"
+	checkStarted := make(chan struct{}, 1)
+	checkCanceled := make(chan struct{}, 1)
+	provider := activationTestProvider{
+		report: func(context.Context, string, string, string, ota.DeviceInfo) (ota.Binding, error) {
+			return ota.Binding{ActivationCode: "123456"}, nil
+		},
+		check: func(ctx context.Context, _ string) (bool, error) {
+			checkStarted <- struct{}{}
+			<-ctx.Done()
+			checkCanceled <- struct{}{}
+			return false, ctx.Err()
+		},
+	}
+	session := newSession(deviceID, "user-a", 8)
+	session.DeviceInfo <- activationTestDeviceInfo(deviceID)
+	startOTADeviceSession(session, provider, &activationTestSpeaker{}, shortActivationTiming())
+	select {
+	case <-checkStarted:
+	case <-time.After(time.Second):
+		t.Fatal("activation polling did not start")
+	}
+	session.cancel()
+	select {
+	case <-checkCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("session expiry did not cancel activation polling")
+	}
+}
+
+func TestActivationSpeechFailureRetriesWithoutEndingDeviceSession(t *testing.T) {
+	const deviceID = "AA:BB:CC:DD:EE:FF"
+	provider := activationTestProvider{
+		report: func(context.Context, string, string, string, ota.DeviceInfo) (ota.Binding, error) {
+			return ota.Binding{ActivationCode: "123456"}, nil
+		},
+		check: func(context.Context, string) (bool, error) { return false, nil },
+	}
+	speaker := &activationTestSpeaker{
+		frames:    [][]byte{bytes.Repeat([]byte{0x33}, 640)},
+		called:    make(chan string, 4),
+		failFirst: true,
+	}
+	session := newSession(deviceID, "user-a", 8)
+	defer session.cancel()
+	session.DeviceInfo <- activationTestDeviceInfo(deviceID)
+	timing := shortActivationTiming()
+	timing.promptInterval = 10 * time.Millisecond
+	startOTADeviceSession(session, provider, speaker, timing)
+	for range 2 {
+		select {
+		case code := <-speaker.called:
+			if code != "123456" {
+				t.Fatalf("activation code = %q", code)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("activation speech was not retried")
+		}
+	}
+	select {
+	case frame := <-session.AudioOut:
+		if !bytes.Equal(frame.audio, speaker.frames[0]) {
+			t.Fatalf("retried activation frame = %x", frame.audio[:min(4, len(frame.audio))])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retried activation prompt did not reach device queue")
+	}
+	select {
+	case <-session.Done:
+		t.Fatal("speech failure ended the device session")
+	default:
+	}
+}
+
+func TestActivationBackoffDefaultsMatchProductTiming(t *testing.T) {
+	if defaultActivationTiming.retryInitial != time.Second || defaultActivationTiming.retryMax != 30*time.Second ||
+		defaultActivationTiming.pollInitial != 5*time.Second || defaultActivationTiming.pollMax != 30*time.Second ||
+		defaultActivationTiming.promptInterval != 60*time.Second {
+		t.Fatalf("activation timing defaults = %+v", defaultActivationTiming)
+	}
+}
+
+func shortActivationTiming() activationTiming {
+	return activationTiming{
+		retryInitial: 2 * time.Millisecond, retryMax: 8 * time.Millisecond,
+		pollInitial: 2 * time.Millisecond, pollMax: 8 * time.Millisecond,
+		promptInterval: 20 * time.Millisecond,
+	}
+}
+
+type activationTestProvider struct {
+	report func(context.Context, string, string, string, ota.DeviceInfo) (ota.Binding, error)
+	check  func(context.Context, string) (bool, error)
+}
+
+func (p activationTestProvider) Report(ctx context.Context, deviceID, clientID, userAgent string, info ota.DeviceInfo) (ota.Binding, error) {
+	return p.report(ctx, deviceID, clientID, userAgent, info)
+}
+
+func (p activationTestProvider) CheckActivation(ctx context.Context, deviceID string) (bool, error) {
+	return p.check(ctx, deviceID)
+}
+
+type activationTestSpeaker struct {
+	frames    [][]byte
+	called    chan string
+	err       error
+	failFirst bool
+	attempts  atomic.Int32
+}
+
+func (s *activationTestSpeaker) Synthesize(_ context.Context, code string) ([][]byte, error) {
+	if s.called != nil {
+		s.called <- code
+	}
+	if s.failFirst && s.attempts.Add(1) == 1 {
+		return nil, errors.New("temporary TTS failure")
+	}
+	return s.frames, s.err
+}
+
+func activationTestDeviceInfo(deviceID string) ota.DeviceInfo {
+	return ota.DeviceInfo{
+		ActivationVersion: 1,
+		Report: ota.ReportPayload{
+			MACAddress:  deviceID,
+			Application: ota.Application{Name: "linx-intercom", Version: "1.0.0", ELFSHA256: strings.Repeat("a", 64)},
+			Board:       ota.Board{Type: "linx-intercom-esp32s3", SSID: "test-wifi", RSSI: -40},
+		},
 	}
 }
