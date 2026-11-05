@@ -1,118 +1,118 @@
-# Linx OTA Automatic Binding Design
+# 灵矽 OTA 自动绑定设计
 
-## Goal
+## 目标
 
-Remove manual Linx WebSocket URL/token provisioning from the server. For each physical ESP32-S3, the Go service will request OTA configuration using that device's identity, report the activation code through the device speaker, and automatically detect when the user has bound the device in the Linx console. After binding, Go will request OTA configuration again and start that device's isolated Linx WebSocket session.
+移除服务端对灵矽 WebSocket 地址和 token 的手动配置。Go 服务根据每台实体 ESP32-S3 的设备身份请求 OTA 配置，通过设备扬声器播报激活码，并自动检测用户是否已在灵矽控制台完成绑定。绑定后，Go 再次请求 OTA 配置，取得该设备独立的灵矽 WebSocket 会话所需信息。
 
-The only user action during first binding is entering the six-digit activation code in the Linx console and selecting the target agent. No Linx account API credential is stored by this project.
+首次绑定时，用户只需在灵矽控制台输入六位激活码并选择目标智能体。本项目不保存灵矽账号 API 凭证。
 
-## Non-goals
+## 非目标
 
-- Automatically signing in to a Linx user account or calling the authenticated device-bind API.
-- Changing device-to-Go authentication (`DEVICE_TOKENS`) or MCP authentication (`MCP_API_TOKEN`).
-- Sending the Linx WebSocket token to ESP32.
-- Changing the room, friendship, media, or wake-word workflows.
-- Adding a general-purpose local TTS subsystem. Local speech is used only for the short activation prompt.
+- 不自动登录灵矽账号，也不调用需要账号鉴权的设备绑定 API。
+- 不改变设备到 Go 服务的认证方式（`DEVICE_TOKENS`）或 MCP 认证方式（`MCP_API_TOKEN`）。
+- 不把灵矽 WebSocket token 发送给 ESP32。
+- 不改变房间、好友、媒体或唤醒词流程。
+- 不构建通用本地 TTS 子系统；本地语音仅用于播报简短的激活提示。
 
-## User Flow
+## 用户流程
 
-1. ESP32 joins Wi-Fi and connects to the authenticated Go device WebSocket.
-2. ESP32 sends one `device_info` control message containing the OTA-required firmware, board, and current Wi-Fi metadata.
-3. Go submits an OTA report for that device.
-4. If OTA returns an activation code but no WebSocket token, Go synthesizes a Chinese prompt with local `espeak-ng` and streams it to the ESP32 speaker using the existing PCM downlink. It repeats the code on first receipt and every 60 seconds while the device remains unbound.
-5. The user enters the six-digit code in the Linx console and binds the device to the desired agent.
-6. Go polls the OTA activation check. When Linx reports the device bound, Go submits OTA again, receives the WebSocket URL/token, and starts the per-device Linx session.
-7. The activation prompt stops. The Linx token remains only in the in-memory device session.
+1. ESP32 接入 Wi-Fi，并连接到经过认证的 Go 设备 WebSocket。
+2. ESP32 发送一条 `device_info` 控制消息，其中包含 OTA 所需的固件、板卡和当前 Wi-Fi 信息。
+3. Go 为该设备提交 OTA 上报。
+4. 如果 OTA 返回激活码但没有 WebSocket token，Go 使用本地 `espeak-ng` 合成中文提示，通过现有 PCM 下行链路发送到 ESP32 扬声器。首次取得激活码时立即播报，此后设备仍未绑定时每 60 秒重播。
+5. 用户在灵矽控制台输入六位激活码，并将设备绑定到目标智能体。
+6. Go 轮询 OTA 激活状态。灵矽确认设备已绑定后，Go 再次提交 OTA 上报，取得 WebSocket URL/token，并启动该设备独立的灵矽会话。
+7. 停止播报激活提示。灵矽 token 仅保存在设备会话的内存中。
 
-The OTA activation code is not submitted back to Go. The user enters it directly in the Linx console.
+用户无需另行把激活码提供给 Go；只需直接在灵矽控制台输入该激活码。
 
-## Components and Data Flow
+## 组件与数据流
 
-### Device metadata
+### 设备元数据
 
-The physical station MAC remains the device identity. It is sent in the existing `Device-Id` WebSocket header and must match OTA's `mac_address` field. The existing persistent UUID v4 Linx `Client-Id` remains stable across ESP32 reconnects and server restarts.
+实体设备的 Wi-Fi STA MAC 仍作为设备身份。该 MAC 通过现有 WebSocket `Device-Id` 请求头发送，并且必须与 OTA 请求中的 `mac_address` 一致。现有持久化的 UUID v4 灵矽 `Client-Id` 在 ESP32 断线重连和服务端重启后保持稳定。
 
-After the device WebSocket is attached, firmware sends a JSON text message of type `device_info` with the fields needed to form the OTA request:
+设备 WebSocket 建立后，固件发送一条 JSON 文本消息，类型为 `device_info`，包含构造 OTA 请求所需的字段：
 
-- Application name/version, ESP-IDF version, compile time, and firmware ELF SHA-256.
-- Chip model, board type, flash size, and any supported partition metadata.
-- Current Wi-Fi SSID and RSSI; SSID is required by the documented OTA board schema.
-- Station MAC, which must equal `Device-Id`.
-- `Activation-Version`, derived from the device's serial-number/eFuse provisioning state. Current v1 devices without a pre-registered serial use version `1`; devices with a valid provisioned serial use version `2` and include that value as optional `serial_number` metadata.
+- 应用名称/版本、ESP-IDF 版本、编译时间和固件 ELF SHA-256。
+- 芯片型号、板卡类型、闪存容量及设备支持上报的分区信息。
+- 当前 Wi-Fi SSID 和 RSSI；官方 OTA 板卡字段要求提供 SSID。
+- Wi-Fi STA MAC，且必须与 `Device-Id` 一致。
+- `Activation-Version`：根据设备序列号/eFuse 预注册状态确定。当前没有预注册序列号的 v1 设备使用版本 `1`；含有效预注册序列号的设备使用版本 `2`，并将序列号作为可选的 `serial_number` 元数据上报。
 
-Go validates the message shape and that the reported MAC matches the authenticated WebSocket identity. It does not log SSID, firmware hashes, activation codes, or tokens. Device metadata is runtime session data and is not persisted in SQLite.
+Go 校验消息结构，并验证上报的 MAC 与已认证 WebSocket 身份一致。日志不记录 SSID、固件哈希、激活码或 token。设备元数据只保存在运行中的会话中，不写入 SQLite。
 
-### OTA registration
+### OTA 注册
 
-Go posts to `https://xrobo.qiniuapi.com/v1/ota/` using the `Activation-Version` reported by ESP32, `Device-Id`, persistent `Client-Id`, `User-Agent`, and the firmware/board JSON reported by ESP32. For activation version `2`, Go also sends the reported serial as the `Serial-Number` request header; version `1` omits it. `mac_address` must match `Device-Id`; `board.type`, `board.ssid`, `board.rssi`, `application.version`, and `application.elf_sha256` must be populated from the actual board/runtime/build metadata rather than placeholder values. Go rejects inconsistent combinations of activation version and serial metadata before making the OTA request.
+Go 向 `https://xrobo.qiniuapi.com/v1/ota/` 发起请求，使用 ESP32 上报的 `Activation-Version`、`Device-Id`、持久化的 `Client-Id`、`User-Agent` 以及固件/板卡 JSON 信息。激活版本为 `2` 时，Go 还将上报的序列号写入 `Serial-Number` 请求头；版本为 `1` 时不发送该请求头。`mac_address` 必须与 `Device-Id` 一致；`board.type`、`board.ssid`、`board.rssi`、`application.version` 和 `application.elf_sha256` 必须来自实际板卡、运行时或构建元数据，不得使用占位值。Go 在发送 OTA 请求前拒绝激活版本与序列号元数据不一致的消息。
 
-The response is interpreted as follows:
+响应按以下规则处理：
 
-- `websocket.token` and `websocket.url` present: the device is bound; start or refresh its Linx WebSocket session.
-- `activation.code` present and no token: the device is waiting for the user to bind it; synthesize and play the code, then begin activation polling.
-- Neither a token nor an activation code: treat the response as a protocol/registration error and log the sanitized stage and response status, not the response body.
-- OTA business errors must be checked in the JSON body even when the HTTP status is 200.
+- 同时包含 `websocket.token` 和 `websocket.url`：设备已绑定，启动或刷新该设备的灵矽 WebSocket 会话。
+- 包含 `activation.code` 且不含 token：设备正在等待用户绑定，合成并播报激活码，然后开始轮询激活状态。
+- 既没有 token，也没有激活码：视为协议或注册错误；日志只记录脱敏后的处理阶段和响应状态，不记录响应正文。
+- 即使 HTTP 状态码为 200，也必须检查 JSON 正文中的 OTA 业务错误。
 
-The OTA activation check is `POST https://xrobo.qiniuapi.com/v1/ota/` at initial registration, then `POST https://xrobo.qiniuapi.com/v1/ota/activate` with `Device-Id` while waiting. A `202` response means still unbound. A successful `200 success` response triggers a fresh OTA report to obtain the URL and token.
+初次注册通过 `POST https://xrobo.qiniuapi.com/v1/ota/` 完成。等待绑定期间，Go 使用 `Device-Id` 请求头调用 `POST https://xrobo.qiniuapi.com/v1/ota/activate` 检查激活状态。响应 `202` 表示仍未绑定；响应为 `200 success` 时，Go 再次提交 OTA 上报以获取 URL 和 token。
 
-### Local activation speech
+### 本地播报激活码
 
-The server invokes `espeak-ng` directly without a shell, in Mandarin (`cmn` voice where available), to speak the activation code as separated Chinese digits. `espeak-ng` produces WAV audio; Go validates the WAV format, converts it to 16 kHz mono PCM16, splits it into the existing 640-byte/20 ms device frames, and enqueues those frames on the device downlink. Linx TTS and room audio are not prerequisites for activation playback.
+服务端直接启动 `espeak-ng`，不经过 shell；如果系统提供普通话（`cmn`）语音，则使用该语音将激活码按单个数字读出。`espeak-ng` 输出 WAV 音频；Go 校验 WAV 格式，将其转换为 16 kHz、单声道、PCM16，再切分为现有的 640 字节/20 ms 设备音频帧，放入设备下行队列。播报激活码不依赖灵矽 TTS 或房间音频。
 
-The deployment image installs the `espeak-ng` runtime package. No additional TTS model files are required. Speech command duration and output size are bounded. The activation code is passed only to the child process and is never logged. Synthesis failure leaves the authenticated device session alive and retries the prompt on the next 60-second interval.
+服务端镜像安装 `espeak-ng` 运行时软件包，不额外引入 TTS 模型文件。合成命令的执行时长和输出大小都有上限。激活码只传给子进程，不写入日志。合成失败时保持已认证的设备会话，并在下一个 60 秒周期重试播报。
 
-## State and Credential Lifecycle
+## 状态与凭证生命周期
 
-- Persistent Linx `Client-Id` remains in SQLite as today.
-- OTA metadata, activation code, and returned WebSocket token are held in memory for the active device session only.
-- The Linx token is not written to SQLite, logs, or ESP32 storage.
-- A process restart closes sessions. When ESP32 reconnects, Go reports OTA again and obtains current binding state/configuration. Linx's documented activation-code cache may return the same pending code; the implementation must not depend on a particular cache duration.
-- A Linx WebSocket 401/403 triggers a fresh OTA report before retrying the connection. Other transient Linx errors use the existing reconnect backoff.
-- Each physical device keeps its own OTA state, activation polling, TTS output, and Linx session; IDs, audio, or credentials must never cross device sessions.
+- 持久化的灵矽 `Client-Id` 仍保存在 SQLite 中，与当前实现一致。
+- OTA 元数据、激活码和返回的 WebSocket token 仅在当前设备会话期间保存在内存中。
+- 灵矽 token 不写入 SQLite、日志或 ESP32 存储。
+- 服务进程重启会关闭会话。ESP32 重连后，Go 重新上报 OTA 并获取当前绑定状态/配置。灵矽可能在缓存有效期内为同一设备返回相同的待绑定激活码；实现不得依赖特定的缓存时长。
+- 灵矽 WebSocket 返回 401/403 时，先重新请求 OTA，再尝试连接。其他临时灵矽错误使用现有重连退避策略。
+- 每台实体设备拥有独立的 OTA 状态、激活状态轮询、TTS 输出和灵矽会话；设备 ID、音频和凭证不得跨会话混用。
 
-## Retry and Failure Handling
+## 重试与故障处理
 
-- Device WebSocket authentication and the 60-second reconnect grace period remain unchanged.
-- OTA network errors, HTTP 5xx, and temporary platform errors retry with bounded exponential backoff from 1 second to 30 seconds. They do not disconnect ESP32 from Go or allocate a second session.
-- Activation polling begins at 5 seconds and backs off to at most 30 seconds while the platform reports 202. Polling stops on bind success, device session expiry, or cancellation.
-- While waiting for binding, Go speaks the code on first receipt and every 60 seconds until binding succeeds or the session expires.
-- Invalid OTA payload/business errors are logged with phase and HTTP status and retried at the bounded backoff; response bodies and secrets are not logged.
-- Missing/invalid device metadata prevents OTA registration for that session. The device remains connected to Go and firmware may resend metadata after a corrected/reconnected state.
-- If the OTA activation check says `success` but the next OTA report still omits a token, Go treats this as a transient protocol state and retries OTA; it must not start Linx with an empty credential.
-- `espeak-ng` missing, timeout, nonzero exit, invalid WAV, or PCM conversion error is logged without disconnecting ESP32. The activation attempt remains pending and speech retries after 60 seconds.
-- Linx authentication failures refresh OTA configuration; non-authentication errors reconnect with backoff while retaining the device session.
+- 设备 WebSocket 认证方式和 60 秒重连宽限期保持不变。
+- OTA 网络错误、HTTP 5xx 和临时平台错误采用有界指数退避重试，间隔从 1 秒增加到最多 30 秒。重试期间不关闭 ESP32 连接，也不为同一设备分配第二个会话。
+- 激活状态轮询从 5 秒后开始；平台持续返回 `202` 时，轮询间隔逐步增加到最多 30 秒。绑定成功、设备会话过期或任务取消时停止轮询。
+- 等待绑定期间，首次收到激活码时立即播报，此后每 60 秒播报一次，直到绑定成功或会话过期。
+- 无效 OTA 载荷或业务错误记录处理阶段和 HTTP 状态，并按有界退避间隔重试；不记录响应正文或秘密信息。
+- 设备元数据缺失或无效时，不执行该会话的 OTA 注册。设备仍保持与 Go 的连接；修复元数据后，固件可重新上报或重连。
+- 如果 OTA 激活检查返回 `success`，但随后 OTA 上报仍未返回 token，Go 将其视为临时协议状态并重试 OTA；不得使用空凭证启动灵矽会话。
+- `espeak-ng` 缺失、超时、非零退出、WAV 无效或 PCM 转换失败时，记录错误但不关闭 ESP32 会话。激活流程保持等待状态，并在 60 秒后重试播报。
+- 灵矽鉴权失败时刷新 OTA 配置；其他非鉴权错误在保留设备会话的同时按退避策略重连。
 
-## Configuration Changes
+## 配置变更
 
-- Remove `LINX_DEVICE_TOKENS` and static `LINX_WS_URL` as required configuration. Linx URL/token come from OTA per device.
-- Add the `espeak-ng` OS package to the server container image.
-- Preserve `DEVICE_TOKENS`, `MCP_API_TOKEN`, KWS configuration, and optional Janus configuration without behavioral change.
-- Keep the Linx OTA host fixed to the documented HTTPS endpoint in code for v1; do not add a public environment override without a demonstrated need.
+- 不再要求配置静态的 `LINX_DEVICE_TOKENS` 和 `LINX_WS_URL`；每台设备的灵矽 URL/token 从 OTA 动态取得。
+- 在服务端容器镜像中安装 `espeak-ng` 系统软件包。
+- 保留 `DEVICE_TOKENS`、`MCP_API_TOKEN`、KWS 配置和可选 Janus 配置，行为不变。
+- v1 将灵矽 OTA 主机地址固定为官方文档中的 HTTPS 地址；没有明确需求前，不增加公开的环境变量覆盖项。
 
-## Logging and Privacy
+## 日志与隐私
 
-Log OTA request start, activation-pending, bind-success, OTA refresh, Linx connection start/result, speech playback result, retries, and session cleanup with device/session IDs and elapsed time. Never log Wi-Fi SSID, activation code, token, complete OTA response, audio samples, or synthesized audio.
+记录 OTA 请求开始、等待绑定、绑定成功、OTA 凭证刷新、灵矽连接开始/结果、语音播报结果、重试和会话清理等状态，日志包含设备/会话 ID 和耗时。禁止记录 Wi-Fi SSID、激活码、token、完整 OTA 响应、音频采样或合成音频。
 
-## Verification
+## 验证
 
-Automated tests use fake OTA HTTP and Linx WebSocket peers to cover:
+自动化测试使用伪造的 OTA HTTP 服务和灵矽 WebSocket 服务，覆盖以下情况：
 
-- OTA metadata and identity matching; rejection when MAC and authenticated Device-Id differ.
-- Unbound response produces only activation speech and no Linx connection.
-- `202` continues polling; bind success triggers a second OTA request and then a Linx connection using the returned URL/token.
-- OTA HTTP errors and HTTP-200 business errors retry without ending the device session.
-- Linx 401/403 causes OTA refresh; transient Linx errors use reconnect backoff.
-- Per-device activation/polling/token state isolation and cancellation on session expiry.
-- TTS WAV conversion into correctly sized PCM frames; no activation code or token appears in operational logs.
-- Firmware emits required `device_info` fields without logging SSID or adding credentials to the payload.
+- OTA 元数据及设备身份匹配；MAC 与已认证的 `Device-Id` 不一致时拒绝请求。
+- 未绑定响应只触发激活码播报，不建立灵矽连接。
+- `202` 响应持续触发轮询；绑定成功后再次请求 OTA，并使用返回的 URL/token 建立灵矽连接。
+- OTA HTTP 错误和 HTTP 200 业务错误会触发重试，但不结束设备会话。
+- 灵矽 401/403 会触发 OTA 刷新；其他临时错误使用重连退避。
+- 多台设备之间的激活状态、轮询任务和 token 相互隔离；会话过期时正确取消任务。
+- WAV 转换生成正确长度的 PCM 音频帧；运行日志中不出现激活码或 token。
+- 固件上报必需的 `device_info` 字段，不记录 SSID，也不在消息中加入凭证。
 
-Real-account verification must confirm the OTA payload is accepted for this custom ESP32-S3 board, the six-digit code binds the device in the Linx console, `/ota/activate` transitions to success, and the refreshed WebSocket credentials establish a virtual-device session. Hardware verification must confirm the spoken digits are intelligible through the selected codec/speaker.
+使用真实账号验证时，需确认灵矽接受此自定义 ESP32-S3 板卡的 OTA 载荷、六位激活码可在灵矽控制台完成绑定、`/ota/activate` 状态会变为成功，并且刷新后取得的 WebSocket 凭证可建立虚拟设备会话。硬件验证需确认选定的 Codec/扬声器能清晰播报数字。
 
-## Open Platform Validation
+## 平台待验证事项
 
-The platform documentation describes OTA request fields and binding responses but does not guarantee custom board acceptance, activation-code lifetime, polling limits, or Linx token lifetime/rotation. The implementation must treat these as runtime outcomes, use bounded retries, and record sanitized diagnostics for the real-account test.
+平台文档说明了 OTA 请求字段和绑定响应，但没有保证自定义板卡一定会被接受，也未规定激活码有效期、轮询频率限制或灵矽 token 的有效期/轮换方式。实现必须将这些情况视为运行时结果，采用有界重试，并为真实账号测试记录脱敏后的诊断信息。
 
-Reference protocols:
+协议参考：
 
-- [Linx OTA](https://linx.qiniu.com/docs/xrobot/platform/OTA)
-- [Linx WebSocket](https://linx.qiniu.com/docs/xrobot/platform/websocket)
+- [灵矽 OTA](https://linx.qiniu.com/docs/xrobot/platform/OTA)
+- [灵矽 WebSocket](https://linx.qiniu.com/docs/xrobot/platform/websocket)
