@@ -31,18 +31,18 @@ SQLite 存在 `intercom-data` named volume 中。升级前备份该卷中的 `in
 
 ### 唤醒词模型
 
-服务端使用 sherpa-onnx 流式 KWS。Linux amd64/arm64 镜像内含对应原生运行库；本地放入模型文件到 `deploy/models/kws/`，该目录内容默认被 Git 忽略。至少准备 encoder、decoder、joiner、tokens 和关键词文件，并在 `.env` 中设置容器内路径，例如：
+唤醒短语确定为“灵矽灵矽”。服务端使用 sherpa-onnx 中文 Zipformer KWS 开放词汇模型，可直接配置短语，不需要训练。Linux amd64/arm64 镜像内含对应原生运行库。准备模型和关键词文件：
 
-```dotenv
-KWS_ENCODER=/opt/kws/encoder.onnx
-KWS_DECODER=/opt/kws/decoder.onnx
-KWS_JOINER=/opt/kws/joiner.onnx
-KWS_TOKENS=/opt/kws/tokens.txt
-KWS_KEYWORDS_FILE=/opt/kws/keywords.txt
-KWS_NUM_THREADS=1
+```sh
+python3 -m venv ~/tmp/sherpa-kws-cli
+~/tmp/sherpa-kws-cli/bin/pip install sherpa-onnx click sentencepiece pypinyin
+PATH="$HOME/tmp/sherpa-kws-cli/bin:$PATH" bash deploy/prepare-kws.sh
+cp deploy/server.env.example deploy/.env
 ```
 
-五个文件路径必须一起配置；全部留空时服务会明确记录唤醒检测已禁用，部分配置或模型加载失败会阻止服务启动。每个在线物理设备独立加载一份模型与流状态，CPU/内存会随在线设备数增加；上线前需用目标模型测量单实例资源占用。当前默认关键词分数为 3.0、阈值为 0.1。回看缓存约为 1 秒（50 个 20 ms 帧），普通对讲会相应延迟；尚未用目标唤醒短语的录音验证误触发、漏检和实际延迟。
+脚本从 ModelScope 固定版本下载 int8 encoder、decoder、joiner 和 tokens，并校验各文件 SHA-256；然后通过 `sherpa-onnx-cli text2token` 按模型的 `ppinyin` 词表生成“灵矽灵矽”的关键词文件。模型权重和生成文件保存在 Git 忽略的 `deploy/models/kws/`，不会进入代码提交。脚本会拒绝覆盖已存在的模型目录。
+
+`deploy/server.env.example` 已填好该模型的容器路径。复制为 `.env` 后再填设备、Linx 和 MCP 密钥；运行容器时 `deploy/models/kws/` 已挂载到 `/opt/kws`。唤醒模型的五个路径必须全部配置或全部留空；路径只配置一部分时服务启动失败。ONNX 文件在设备首次连接并创建会话时加载，文件缺失或模型不兼容会导致该设备会话创建失败并记录错误。每个在线设备独立加载一份模型与流状态，CPU/内存随在线设备数增加。默认关键词分数为 3.0、阈值为 0.1；回看缓存约 1 秒，普通对讲会相应延迟。首次启动后仍需用目标说话人的录音验证误触发、漏检和实际延迟。
 
 配置开放 TCP `8088`（HTTP WebSocket）和 UDP `10000-10100`（WebRTC ICE/RTP）。生产环境应将 Janus WebSocket 限制为 Go 服务可访问，并通过反向代理提供 TLS/WSS；不要把未启用 HTTPS 的 HTTP transport 直接暴露到公网。部署在 NAT 后方时，需要在 Janus 中设置公网映射地址，或部署 TURN 服务并在 Go 的 ICE server 配置中指定。当前 compose 是联调起点，真实服务器上的防火墙/NAT 地址必须按实际网络校验。
 
