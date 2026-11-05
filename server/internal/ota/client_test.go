@@ -1,13 +1,18 @@
 package ota
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"linx-intercom/server/internal/logctx"
 )
 
 func TestReportSendsDeviceIdentityAndReturnsActivation(t *testing.T) {
@@ -55,6 +60,55 @@ func TestReportSendsDeviceIdentityAndReturnsActivation(t *testing.T) {
 	}
 }
 
+func TestOTAOperationLogsIncludeSessionAndDuration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/ota/activate" {
+			_, _ = w.Write([]byte("success"))
+			return
+		}
+		_, _ = w.Write([]byte(`{"activation":{"code":"123456"}}`))
+	}))
+	defer server.Close()
+
+	var logs bytes.Buffer
+	client := newClient(server.URL, server.Client())
+	client.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	ctx := logctx.WithSessionID(context.Background(), "session-a")
+	if _, err := client.Report(ctx, "AA:BB:CC:DD:EE:FF", "client-uuid", "linx-intercom/1.2.3", validDeviceInfo()); err != nil {
+		t.Fatal(err)
+	}
+	if bound, err := client.CheckActivation(ctx, "AA:BB:CC:DD:EE:FF"); err != nil || !bound {
+		t.Fatalf("CheckActivation() = %v, %v", bound, err)
+	}
+
+	scanner := bufio.NewScanner(&logs)
+	seen := map[string]bool{}
+	for scanner.Scan() {
+		var event map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event["session_id"] != "session-a" {
+			t.Errorf("log event lacks session_id: %s", scanner.Bytes())
+		}
+		message, _ := event["msg"].(string)
+		if strings.HasSuffix(message, "response") || message == "Linx activation check response" {
+			if _, ok := event["duration_ms"].(float64); !ok {
+				t.Errorf("log event lacks duration_ms: %s", scanner.Bytes())
+			}
+			seen[message] = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []string{"Linx OTA response", "Linx activation check response"} {
+		if !seen[message] {
+			t.Errorf("missing log event %q", message)
+		}
+	}
+}
+
 func TestReportSendsSerialForActivationVersionTwo(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Activation-Version") != "2" || r.Header.Get("Serial-Number") != "SERIAL-0001" {
@@ -78,7 +132,7 @@ func TestReportSendsSerialForActivationVersionTwo(t *testing.T) {
 
 func TestReportRejectsInvalidDeviceInfoBeforeRequest(t *testing.T) {
 	cases := []struct {
-		name  string
+		name   string
 		mutate func(*DeviceInfo)
 	}{
 		{name: "device mac mismatch", mutate: func(info *DeviceInfo) { info.Report.MACAddress = "00:00:00:00:00:00" }},
@@ -190,7 +244,7 @@ func validDeviceInfo() DeviceInfo {
 				Name: "linx-intercom", Version: "1.2.3", CompileTime: "2026-11-05 10:00:00",
 				IDFVersion: "5.3.2", ELFSHA256: strings.Repeat("a", 64),
 			},
-			Board: Board{Type: "linx-intercom-esp32s3", SSID: "test-wifi", RSSI: -42},
+			Board:         Board{Type: "linx-intercom-esp32s3", SSID: "test-wifi", RSSI: -42},
 			ChipModelName: "esp32s3",
 			FlashSize:     8388608,
 		},

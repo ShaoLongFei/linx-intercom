@@ -40,6 +40,7 @@ type Session struct {
 	Done         <-chan struct{}
 
 	mu             sync.Mutex
+	createdAt      time.Time
 	conn           *websocket.Conn
 	generation     uint64
 	timer          *time.Timer
@@ -59,6 +60,7 @@ func newSession(deviceID, userID string, queueSize int) *Session {
 		ID:           newID(),
 		DeviceID:     deviceID,
 		UserID:       userID,
+		createdAt:    time.Now(),
 		AudioIn:      make(chan []byte, queueSize),
 		JanusAudioIn: make(chan []byte, queueSize),
 		AudioOut:     make(chan downlinkMessage, queueSize),
@@ -348,7 +350,8 @@ func (m *SessionManager) expire(deviceID string, expected *Session, generation u
 	session.cancel()
 	LeaveMedia(session)
 	session.AudioRouter.Close()
-	m.logger.Info("device session expired", "device_id", deviceID, "session_id", session.ID)
+	m.logger.Info("device session expired", "device_id", deviceID, "session_id", session.ID,
+		"lifetime_ms", time.Since(session.createdAt).Milliseconds())
 }
 
 func (m *SessionManager) ActiveCount() int {

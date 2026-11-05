@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"linx-intercom/server/internal/linx"
+	"linx-intercom/server/internal/logctx"
 	"linx-intercom/server/internal/ota"
 )
 
@@ -57,6 +58,11 @@ func startOTADeviceSession(session *Session, provider OTAProvider, speaker Activ
 }
 
 func runOTADeviceSession(ctx context.Context, session *Session, provider OTAProvider, speaker ActivationSpeaker, timing activationTiming) {
+	workerStartedAt := time.Now()
+	defer func() {
+		slog.Info("Linx OTA device worker stopped", "device_id", session.DeviceID, "session_id", session.ID,
+			"duration_ms", time.Since(workerStartedAt).Milliseconds())
+	}()
 	if provider == nil {
 		slog.Error("Linx OTA session cannot start without provider", "device_id", session.DeviceID, "session_id", session.ID)
 		return
@@ -84,13 +90,16 @@ func runOTADeviceSession(ctx context.Context, session *Session, provider OTAProv
 			userAgent := info.Report.Application.Name + "/" + info.Report.Application.Version
 			slog.Info("Linx OTA registration started", "device_id", session.DeviceID, "session_id", session.ID,
 				"client_id", session.LinxClientID, "user_agent", userAgent)
-			binding, err := provider.Report(ctx, session.DeviceID, session.LinxClientID, userAgent, info)
+			requestStartedAt := time.Now()
+			binding, err := provider.Report(logctx.WithSessionID(ctx, session.ID), session.DeviceID,
+				session.LinxClientID, userAgent, info)
+			requestDuration := time.Since(requestStartedAt).Milliseconds()
 			if ctx.Err() != nil {
 				return
 			}
 			if err != nil {
 				slog.Error("Linx OTA registration failed", "device_id", session.DeviceID, "session_id", session.ID,
-					"error", err, "retry_seconds", backoff.Seconds())
+					"error", err, "duration_ms", requestDuration, "retry_seconds", backoff.Seconds())
 				info, _ = waitRetryOrMetadata(ctx, session, info, backoff)
 				if ctx.Err() != nil {
 					return
@@ -100,7 +109,7 @@ func runOTADeviceSession(ctx context.Context, session *Session, provider OTAProv
 			}
 			slog.Info("Linx OTA registration state", "device_id", session.DeviceID, "session_id", session.ID,
 				"activation_code", binding.ActivationCode, "websocket_url", binding.WebSocketURL,
-				"websocket_token", binding.WebSocketToken)
+				"websocket_token", binding.WebSocketToken, "duration_ms", requestDuration)
 			if binding.WebSocketURL != "" && binding.WebSocketToken != "" {
 				startLinxPumps(ctx, session)
 				client := linx.Client{URL: binding.WebSocketURL, Token: binding.WebSocketToken, ClientID: session.LinxClientID}
@@ -146,19 +155,25 @@ func runLinxUntilRefresh(ctx context.Context, session *Session, client linx.Clie
 	for {
 		slog.Info("Linx virtual device connection started", "device_id", session.DeviceID, "session_id", session.ID,
 			"url", client.URL, "token", client.Token, "client_id", client.ClientID)
-		err := client.Run(ctx, session.DeviceID, session.LinxAudioIn, session.LinxEventsIn, session.LinxOut)
+		startedAt := time.Now()
+		err := client.Run(logctx.WithSessionID(ctx, session.ID), session.DeviceID,
+			session.LinxAudioIn, session.LinxEventsIn, session.LinxOut)
+		duration := time.Since(startedAt).Milliseconds()
 		if ctx.Err() != nil {
+			slog.Info("Linx virtual device session stopped", "device_id", session.DeviceID,
+				"session_id", session.ID, "duration_ms", duration)
 			return false
 		}
 		var authErr *linx.AuthError
 		if errors.As(err, &authErr) {
 			slog.Warn("Linx authentication rejected; refreshing OTA credentials", "device_id", session.DeviceID,
-				"session_id", session.ID, "status", authErr.StatusCode, "token", client.Token)
+				"session_id", session.ID, "status", authErr.StatusCode, "token", client.Token, "duration_ms", duration)
 			return true
 		}
 		if err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("Linx session disconnected", "device_id", session.DeviceID, "session_id", session.ID,
-				"url", client.URL, "token", client.Token, "error", err, "retry_seconds", backoff.Seconds())
+				"url", client.URL, "token", client.Token, "error", err, "duration_ms", duration,
+				"retry_seconds", backoff.Seconds())
 		}
 		if !waitContext(ctx, backoff) {
 			return false
@@ -172,12 +187,14 @@ func waitForActivation(ctx context.Context, session *Session, provider OTAProvid
 	pollDelay := timing.pollInitial
 	for {
 		if code != *spokenCode || !time.Now().Before(*nextPrompt) {
-			if err := speakActivationCode(ctx, session, speaker, code); err != nil {
+			speechStartedAt := time.Now()
+			if err := speakActivationCode(logctx.WithSessionID(ctx, session.ID), session, speaker, code); err != nil {
 				slog.Error("activation code speech failed", "device_id", session.DeviceID, "session_id", session.ID,
-					"activation_code", code, "error", err, "retry_seconds", timing.promptInterval.Seconds())
+					"activation_code", code, "error", err, "duration_ms", time.Since(speechStartedAt).Milliseconds(),
+					"retry_seconds", timing.promptInterval.Seconds())
 			} else {
 				slog.Info("activation code speech queued", "device_id", session.DeviceID, "session_id", session.ID,
-					"activation_code", code)
+					"activation_code", code, "duration_ms", time.Since(speechStartedAt).Milliseconds())
 			}
 			*spokenCode = code
 			*nextPrompt = time.Now().Add(timing.promptInterval)
@@ -206,16 +223,19 @@ func waitForActivation(ctx context.Context, session *Session, provider OTAProvid
 			stopTimer(promptTimer)
 		}
 
-		bound, err := provider.CheckActivation(ctx, session.DeviceID)
+		checkStartedAt := time.Now()
+		bound, err := provider.CheckActivation(logctx.WithSessionID(ctx, session.ID), session.DeviceID)
+		checkDuration := time.Since(checkStartedAt).Milliseconds()
 		if ctx.Err() != nil {
 			return ota.DeviceInfo{}, false
 		}
 		if err != nil {
 			slog.Warn("Linx activation check failed", "device_id", session.DeviceID, "session_id", session.ID,
-				"activation_code", code, "error", err, "next_poll_seconds", pollDelay.Seconds())
+				"activation_code", code, "error", err, "duration_ms", checkDuration,
+				"next_poll_seconds", pollDelay.Seconds())
 		} else {
 			slog.Info("Linx activation state checked", "device_id", session.DeviceID, "session_id", session.ID,
-				"activation_code", code, "bound", bound)
+				"activation_code", code, "bound", bound, "duration_ms", checkDuration)
 		}
 		if err == nil && bound {
 			slog.Info("Linx console binding detected; refreshing OTA credentials", "device_id", session.DeviceID,

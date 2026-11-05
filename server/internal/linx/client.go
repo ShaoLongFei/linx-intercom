@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/coder/websocket"
+	"linx-intercom/server/internal/logctx"
 	"linx-intercom/server/internal/websocketurl"
 )
 
@@ -40,6 +42,7 @@ type protocolMessage struct {
 }
 
 func (c Client) Run(ctx context.Context, deviceID string, audioIn <-chan []byte, eventsIn <-chan json.RawMessage, results chan<- Result) error {
+	logger := logctx.Logger(ctx, slog.Default(), "device_id", deviceID)
 	if c.URL == "" || c.Token == "" || deviceID == "" {
 		return errors.New("Linx URL, token, and device ID are required")
 	}
@@ -50,6 +53,7 @@ func (c Client) Run(ctx context.Context, deviceID string, audioIn <-chan []byte,
 	if clientID == "" {
 		clientID = deviceID
 	}
+	startedAt := time.Now()
 	header := http.Header{
 		"Authorization":    []string{"Bearer " + c.Token},
 		"Device-Id":        []string{deviceID},
@@ -102,7 +106,8 @@ func (c Client) Run(ctx context.Context, deviceID string, audioIn <-chan []byte,
 	if err != nil {
 		return err
 	}
-	slog.Info("Linx virtual device connected", "device_id", deviceID, "tts_format", decoder.format, "device_pcm_sample_rate", 16000, "device_pcm_frame_ms", 20)
+	logger.Info("Linx virtual device connected", "tts_format", decoder.format, "device_pcm_sample_rate", 16000,
+		"device_pcm_frame_ms", 20, "duration_ms", time.Since(startedAt).Milliseconds())
 
 	writeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -127,7 +132,7 @@ func (c Client) Run(ctx context.Context, deviceID string, audioIn <-chan []byte,
 		case websocket.MessageBinary:
 			frames, err := decoder.decode(payload)
 			if err != nil {
-				slog.Warn("Linx TTS decode failed", "device_id", deviceID, "format", decoder.format, "packet_bytes", len(payload), "error", err)
+				logger.Warn("Linx TTS decode failed", "format", decoder.format, "packet_bytes", len(payload), "error", err)
 				return err
 			}
 			for _, frame := range frames {

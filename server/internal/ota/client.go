@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"linx-intercom/server/internal/logctx"
 	"linx-intercom/server/internal/websocketurl"
 )
 
@@ -99,6 +100,7 @@ func newClient(endpoint string, client *http.Client) *Client {
 }
 
 func (c *Client) Report(ctx context.Context, deviceID, clientID, userAgent string, info DeviceInfo) (Binding, error) {
+	logger := logctx.Logger(ctx, c.logger, "device_id", deviceID)
 	if err := validateDeviceInfo(deviceID, clientID, userAgent, info); err != nil {
 		return Binding{}, err
 	}
@@ -150,18 +152,21 @@ func (c *Client) Report(ctx context.Context, deviceID, clientID, userAgent strin
 		req.Header.Set("Serial-Number", info.SerialNumber)
 		requestHeaders["Serial-Number"] = info.SerialNumber
 	}
-	c.logger.Info("Linx OTA request", "device_id", deviceID, "url", requestURL, "headers", requestHeaders, "body", string(body))
+	logger.Info("Linx OTA request", "url", requestURL, "headers", requestHeaders, "body", string(body))
+	startedAt := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
-		c.logger.Error("Linx OTA request failed", "device_id", deviceID, "error", err)
+		logger.Error("Linx OTA request failed", "error", err, "duration_ms", time.Since(startedAt).Milliseconds())
 		return Binding{}, fmt.Errorf("send Linx OTA request: %w", err)
 	}
 	responseBody, readErr := readResponse(resp)
 	if readErr != nil {
-		c.logger.Error("Linx OTA response read failed", "device_id", deviceID, "status", resp.StatusCode, "error", readErr)
+		logger.Error("Linx OTA response read failed", "status", resp.StatusCode, "error", readErr,
+			"duration_ms", time.Since(startedAt).Milliseconds())
 		return Binding{}, readErr
 	}
-	c.logger.Info("Linx OTA response", "device_id", deviceID, "status", resp.StatusCode, "body", string(responseBody))
+	logger.Info("Linx OTA response", "status", resp.StatusCode, "body", string(responseBody),
+		"duration_ms", time.Since(startedAt).Milliseconds())
 	if resp.StatusCode != http.StatusOK {
 		return Binding{}, fmt.Errorf("Linx OTA returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
 	}
@@ -201,6 +206,7 @@ func (c *Client) Report(ctx context.Context, deviceID, clientID, userAgent strin
 }
 
 func (c *Client) CheckActivation(ctx context.Context, deviceID string) (bool, error) {
+	logger := logctx.Logger(ctx, c.logger, "device_id", deviceID)
 	if _, err := net.ParseMAC(deviceID); err != nil {
 		return false, fmt.Errorf("invalid Linx Device-Id %q: %w", deviceID, err)
 	}
@@ -213,18 +219,21 @@ func (c *Client) CheckActivation(ctx context.Context, deviceID string) (bool, er
 		return false, fmt.Errorf("create Linx activation request: %w", err)
 	}
 	req.Header.Set("Device-Id", deviceID)
-	c.logger.Info("Linx activation check request", "device_id", deviceID, "url", requestURL, "headers", map[string]string{"Device-Id": deviceID})
+	logger.Info("Linx activation check request", "url", requestURL, "headers", map[string]string{"Device-Id": deviceID})
+	startedAt := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
-		c.logger.Error("Linx activation check failed", "device_id", deviceID, "error", err)
+		logger.Error("Linx activation check failed", "error", err, "duration_ms", time.Since(startedAt).Milliseconds())
 		return false, fmt.Errorf("send Linx activation check: %w", err)
 	}
 	body, readErr := readResponse(resp)
 	if readErr != nil {
-		c.logger.Error("Linx activation response read failed", "device_id", deviceID, "status", resp.StatusCode, "error", readErr)
+		logger.Error("Linx activation response read failed", "status", resp.StatusCode, "error", readErr,
+			"duration_ms", time.Since(startedAt).Milliseconds())
 		return false, readErr
 	}
-	c.logger.Info("Linx activation check response", "device_id", deviceID, "status", resp.StatusCode, "body", string(body))
+	logger.Info("Linx activation check response", "status", resp.StatusCode, "body", string(body),
+		"duration_ms", time.Since(startedAt).Milliseconds())
 	if resp.StatusCode == http.StatusAccepted {
 		return false, nil
 	}

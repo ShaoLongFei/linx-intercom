@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"linx-intercom/server/internal/logctx"
 )
 
 func TestConvertWAVSplitsSixteenKHzPCMIntoDeviceFrames(t *testing.T) {
@@ -81,7 +83,7 @@ func TestEspeakRunsChinesePromptAsOneArgument(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
 	defer slog.SetDefault(previous)
 
-	frames, err := (Espeak{binary: binaryPath}).Synthesize(context.Background(), "123456")
+	frames, err := (Espeak{binary: binaryPath}).Synthesize(logctx.WithSessionID(context.Background(), "session-a"), "123456")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +102,9 @@ func TestEspeakRunsChinesePromptAsOneArgument(t *testing.T) {
 		if !strings.Contains(logs.String(), encoded) {
 			t.Fatalf("logs omit complete audio value %q", encoded)
 		}
+	}
+	if !strings.Contains(logs.String(), `"session_id":"session-a"`) || !strings.Contains(logs.String(), `"duration_ms":`) {
+		t.Fatalf("logs omit session ID or operation duration: %s", logs.String())
 	}
 }
 
