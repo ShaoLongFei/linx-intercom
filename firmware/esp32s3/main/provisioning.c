@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include "blufi_security.h"
 #include "device_config.h"
 #include "backend_client.h"
 #include "esp_blufi.h"
@@ -16,6 +17,7 @@
 #include "esp_wifi.h"
 #include "esp_system.h"
 #include "driver/gpio.h"
+#include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -27,6 +29,7 @@ static bool s_blufi_started;
 static uint8_t s_wifi_retries;
 static wifi_config_t s_sta_config;
 
+#if CONFIG_INTERCOM_RESET_BUTTON_GPIO >= 0
 static void reset_button_task(void *arg)
 {
     (void)arg;
@@ -50,6 +53,7 @@ static void reset_button_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
+#endif
 
 static void report_wifi_status(void)
 {
@@ -363,7 +367,8 @@ esp_err_t provisioning_init(void)
     ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_ip_event, NULL), TAG,
                         "register IP event handler failed");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "start Wi-Fi failed");
-    if (CONFIG_INTERCOM_RESET_BUTTON_GPIO >= 0) {
+#if CONFIG_INTERCOM_RESET_BUTTON_GPIO >= 0
+    {
         gpio_config_t button_config = {
             .pin_bit_mask = 1ULL << CONFIG_INTERCOM_RESET_BUTTON_GPIO,
             .mode = GPIO_MODE_INPUT,
@@ -376,6 +381,7 @@ esp_err_t provisioning_init(void)
         ESP_RETURN_ON_FALSE(task_ok == pdPASS, ESP_ERR_NO_MEM, TAG, "start reset button task failed");
         ESP_LOGI(TAG, "hold reset button for three seconds to clear Wi-Fi credentials");
     }
+#endif
     ESP_LOGI(TAG, "Wi-Fi initialized; stored credentials stay in the ESP-IDF Wi-Fi NVS partition");
     return ESP_OK;
 }

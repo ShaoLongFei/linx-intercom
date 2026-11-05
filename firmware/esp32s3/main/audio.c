@@ -78,16 +78,18 @@ esp_err_t audio_init(void)
                         "initialize I2S transmit channel failed");
 
     // Codec 的静音/增益寄存器因板型不同而异，这里只负责标准 I2S 数字通道。
-    if (CONFIG_INTERCOM_AUDIO_AMPLIFIER_GPIO >= 0) {
-        gpio_config_t gpio_config = {
+#if CONFIG_INTERCOM_AUDIO_AMPLIFIER_GPIO >= 0
+    {
+        gpio_config_t amplifier_gpio_config = {
             .pin_bit_mask = 1ULL << CONFIG_INTERCOM_AUDIO_AMPLIFIER_GPIO,
             .mode = GPIO_MODE_OUTPUT,
         };
-        ESP_RETURN_ON_ERROR(gpio_config(&gpio_config), TAG, "configure amplifier GPIO failed");
+        ESP_RETURN_ON_ERROR(gpio_config(&amplifier_gpio_config), TAG, "configure amplifier GPIO failed");
         ESP_RETURN_ON_ERROR(gpio_set_level(CONFIG_INTERCOM_AUDIO_AMPLIFIER_GPIO,
                                            CONFIG_INTERCOM_AUDIO_AMPLIFIER_ACTIVE_LEVEL), TAG,
                             "enable amplifier failed");
     }
+#endif
     s_play_queue = xQueueCreate(AUDIO_PLAY_QUEUE_DEPTH, sizeof(audio_frame_t));
     ESP_RETURN_ON_FALSE(s_play_queue != NULL, ESP_ERR_NO_MEM, TAG, "create audio playback queue failed");
     ESP_LOGI(TAG, "I2S initialized; sample_rate=%d frame_ms=20 frame_bytes=%u",
