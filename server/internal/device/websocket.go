@@ -3,7 +3,6 @@ package device
 import (
 	"context"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -95,7 +94,8 @@ func serveConnection(manager *SessionManager, session *Session, generation uint6
 				slog.Warn("device audio frame rejected", "device_id", session.DeviceID, "session_id", session.ID, "size", len(payload))
 				continue
 			}
-			slog.Info("device audio frame", "device_id", session.DeviceID, "session_id", session.ID, "direction", "uplink", "bytes", len(payload), "pcm_base64", base64.StdEncoding.EncodeToString(payload))
+			slog.Info("device audio frame", "device_id", session.DeviceID, "session_id", session.ID,
+				"direction", "uplink", "bytes", len(payload))
 			if session.EnqueueAudioIn(payload) {
 				slog.Warn("device audio queue dropped stale frame", "device_id", session.DeviceID, "session_id", session.ID, "direction", "uplink")
 			}
@@ -149,7 +149,8 @@ func writeMessages(ctx context.Context, session *Session, conn *websocket.Conn) 
 				slog.Warn("device audio downlink failed", "device_id", session.DeviceID, "session_id", session.ID, "error", err)
 				return
 			}
-			slog.Info("device audio frame", "device_id", session.DeviceID, "session_id", session.ID, "direction", "downlink", "bytes", len(message.audio), "pcm_base64", base64.StdEncoding.EncodeToString(message.audio))
+			slog.Info("device audio frame", "device_id", session.DeviceID, "session_id", session.ID,
+				"direction", "downlink", "bytes", len(message.audio))
 			// 云端 TTS 可能突发返回整句，按设备 20 ms 播放节奏发送，避免挤爆 ESP32 队列。
 			timer := time.NewTimer(20 * time.Millisecond)
 			select {

@@ -22,7 +22,7 @@ DEVICE_TOKENS='{"device-001":"replace-with-device-token"}' go run ./cmd/intercom
 
 设备 WebSocket 请求需带 `Device-Id` 和 `Authorization: Bearer <token>`；服务端只接受 `DEVICE_TOKENS` 中登记的设备。每设备上行音频为二进制 PCM16 单声道帧，控制消息为 JSON 文本帧。设备断线后保留运行会话 60 秒供重连，设备身份、稳定 UUID v4 灵矽 `Client-Id`、房间和好友数据存于 SQLite。MCP 请求需带服务端配置的 Bearer token 和灵矽提供的 `X-Linx-Device-Id`；工具调用者身份由该设备头映射得出。
 
-服务为排障记录完整 Wi-Fi SSID、OTA 请求/响应、激活码、Linx token，以及设备上下行 PCM 的逐帧 Base64。16 kHz PCM16 每个方向约产生 3.68 GB/设备/日的 Base64 日志；请按实际部署容量配置 stdout 收集与保留策略。仍不记录设备到 Go 的 bearer token、MCP API token 或 Wi-Fi 密码。Linx token 只保留在进程和设备会话内存中，但 OTA 响应与连接日志按已确认的测试需求会包含其原始值。
+服务为排障记录完整 Wi-Fi SSID、OTA 请求/响应、激活码和 Linx token。音频日志只记录方向、帧长度、帧数和会话信息，不记录 PCM、WAV 或其他可还原音频的内容。仍不记录设备到 Go 的 bearer token、MCP API token 或 Wi-Fi 密码。Linx token 只保留在进程和设备会话内存中，但 OTA 响应与连接日志会包含其原始值。
 
 运行测试：
 

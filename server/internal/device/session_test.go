@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -227,7 +228,7 @@ func TestDeviceInfoUsesSessionChannelAndInvalidIdentityKeepsConnection(t *testin
 	}
 }
 
-func TestDeviceAudioLogsContainRecoverableBase64Frames(t *testing.T) {
+func TestDeviceAudioLogsContainMetadataWithoutAudioPayload(t *testing.T) {
 	var logs synchronizedBuffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
@@ -274,17 +275,23 @@ func TestDeviceAudioLogsContainRecoverableBase64Frames(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline = time.Now().Add(time.Second)
-	for !strings.Contains(logs.String(), base64.StdEncoding.EncodeToString(downlink)) && time.Now().Before(deadline) {
+	for !strings.Contains(logs.String(), `"direction":"downlink"`) && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	for _, frame := range [][]byte{uplink, downlink} {
-		encoded := base64.StdEncoding.EncodeToString(frame)
-		if !strings.Contains(logs.String(), encoded) {
-			t.Fatalf("logs do not contain complete PCM frame %q: %s", encoded, logs.String())
+	for _, tc := range []struct {
+		frame     []byte
+		direction string
+	}{
+		{frame: uplink, direction: "uplink"},
+		{frame: downlink, direction: "downlink"},
+	} {
+		encoded := base64.StdEncoding.EncodeToString(tc.frame)
+		if strings.Contains(logs.String(), encoded) {
+			t.Fatalf("logs contain raw PCM frame %q: %s", encoded, logs.String())
 		}
-		decoded, err := base64.StdEncoding.DecodeString(encoded)
-		if err != nil || !bytes.Equal(decoded, frame) {
-			t.Fatalf("logged frame did not decode to original: %v", err)
+		if !strings.Contains(logs.String(), `"direction":"`+tc.direction+`"`) ||
+			!strings.Contains(logs.String(), `"bytes":`+strconv.Itoa(len(tc.frame))) {
+			t.Fatalf("logs omit direction or frame size for %s: %s", tc.direction, logs.String())
 		}
 	}
 }

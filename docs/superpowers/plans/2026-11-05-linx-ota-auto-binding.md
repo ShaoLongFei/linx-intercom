@@ -14,7 +14,7 @@
 
 - `Device-Id` 和 OTA `mac_address` 必须使用同一个 Wi-Fi STA MAC；OTA 返回的 Linx token 只进入 Go 设备会话内存，不发给 ESP32，也不写入 SQLite。
 - 当前未预注册序列号的设备使用 `Activation-Version: 1`；提供有效预注册序列号时使用 `Activation-Version: 2` 和 `Serial-Number` 请求头。
-- 当前项目按用户确认记录完整原始 Wi-Fi SSID、OTA 请求/响应与 token、激活码，以及设备 WebSocket 上下行 PCM 音频；二进制音频按帧编码为完整 Base64 日志字段，不截断。不记录设备到 Go 的认证 token、MCP API token 或 Wi-Fi 密码。
+- 当前项目记录完整原始 Wi-Fi SSID、OTA 请求/响应与 token、激活码；音频只记录方向、帧长度、帧数和会话信息，不记录 PCM、WAV 或其他可还原音频的内容。不记录设备到 Go 的认证 token、MCP API token 或 Wi-Fi 密码。
 - 所有轮询、重试和音频合成都必须响应会话取消；临时 OTA/Linx 错误不得结束仍有效的 ESP32 会话。
 - 激活码首次收到时播报，此后每 60 秒播报；绑定轮询从 5 秒开始，最长间隔 30 秒；普通失败退避从 1 秒开始，最长间隔 30 秒。
 - 设备音频保持 PCM16、16 kHz、单声道、每帧 640 字节/20 ms；播放使用现有有序设备下行队列。
@@ -28,7 +28,7 @@
 - OTA 返回 HTTP 200 业务错误、字段缺失或不完整 URL/token 时，不误判绑定成功；Tasks 1 和 4 覆盖。
 - `/ota/activate` 返回 202、success、异常正文、HTTP 错误或 session 取消时，轮询和 OTA 刷新必须符合退避/取消规则；Tasks 1 和 4 覆盖。
 - `espeak-ng` 超时、退出失败、输出超限、非 PCM16 mono WAV 或非预期采样率时，不崩溃、不发送损坏帧；Task 3 覆盖。
-- 两台设备并行或一台重连时，激活码/token/音频/取消信号不串会话；日志中的每方向 Base64 音频约产生 3.68 GB/日/设备，部署文档必须明确说明；Task 4/5 覆盖。
+- 两台设备并行或一台重连时，激活码/token/音频/取消信号不串会话；日志不包含可还原的音频内容；Task 4/5 覆盖。
 
 ---
 
@@ -80,7 +80,7 @@
 - [x] 增加 WebSocket 测试，验证 MAC 不匹配的已认证设备仍保持连接但元数据不会到达 OTA 通道，合法重发会更新同一 session。
 - [x] 固件在 WebSocket connected 事件中发送 `device_info`：从 ESP-IDF app description 读取 application/version/compile time/IDF version/ELF SHA-256，从 STA 接口读取 MAC/SSID/RSSI，从 chip/flash/partition API 读取平台元数据，板卡类型固定为项目板型标识。
 - [x] 增加可选的本机预注册序列号 Kconfig 字段：为空时固件发版本 1；配置有效序列号时发版本 2 与 `serial_number`。对外发送的 MAC 必须与 `Device-Id` 一致。
-- [x] 固件在发送日志中记录完整 `device_info` JSON，确保不包含设备到 Go 的 bearer token 或 Wi-Fi 密码；服务端原样记录该 JSON。将 WebSocket 文本读上限设为 16 KiB。二进制 WebSocket 上行与下行各按帧记录方向、时间、设备/会话 ID 和完整 Base64 PCM，不截断，并添加日志断言验证编码后的内容可还原为原始帧。
+- [x] 固件在发送日志中记录完整 `device_info` JSON，确保不包含设备到 Go 的 bearer token 或 Wi-Fi 密码；服务端原样记录该 JSON。将 WebSocket 文本读上限设为 16 KiB。二进制 WebSocket 上行与下行按帧记录方向、时间、设备/会话 ID 和帧长度，不记录音频 payload；测试验证日志保留元数据且不包含原始音频。
 - [x] 运行 `cd server && go test ./internal/device -count=1`。
 - [ ] 在 ESP-IDF 环境运行 `cd firmware/esp32s3 && idf.py build`；当前主机未安装 `idf.py`，固件编译待有 ESP-IDF 的环境验证。
 - [x] 提交：`git add server/internal/device/protocol.go server/internal/device/websocket.go server/internal/device/session.go server/internal/device/session_test.go firmware/esp32s3/main/backend_client.c firmware/esp32s3/main/backend_client.h firmware/esp32s3/main/Kconfig.projbuild firmware/esp32s3/main/CMakeLists.txt firmware/esp32s3/README.md && git commit -m "feat: report OTA metadata from ESP32"`。
@@ -95,12 +95,12 @@
 **Interfaces:**
 - `speech.Espeak.Synthesize(ctx, activationCode string) ([][]byte, error)` 直接执行 `espeak-ng`，输出设备格式的 640 字节 PCM 帧。
 - WAV 转换仅接受 RIFF/WAVE PCM16 mono，解析实际输入采样率后转为 16 kHz，拒绝空数据、畸形 chunk、超限输出和不支持的编码。
-- 合成使用 `exec.CommandContext`，不经过 shell；命令时限 10 秒，WAV 上限 2 MiB；日志保留激活码、WAV 和 PCM 帧原始值，音频以完整 Base64 字段记录。
+- 合成使用 `exec.CommandContext`，不经过 shell；命令时限 10 秒，WAV 上限 2 MiB；日志记录激活码、WAV/PCM 大小和帧数，不记录原始音频。
 
 - [x] 编写 WAV 转换测试：16 kHz 输入按 640 字节切帧；22050 Hz 输入重采样后生成完整 20 ms 帧；尾部不完整样本、非 PCM16、非单声道、缺失 data chunk、畸形 RIFF chunk 和超限输入均返回错误。
 - [x] 为命令执行添加 fake executable 测试，验证参数使用 `-v cmn --stdout`、输入文本将六位码逐位转成普通话数字（例如 `123456` 转成“灵矽激活码：一，二，三，四，五，六”）、超时/非零退出/超限输出均返回错误且不会写到 shell。
 - [x] 运行 `cd server && go test ./internal/speech -count=1`，确认测试先因包和行为缺失而失败。
-- [x] 实现有界命令输出、RIFF chunk 解析、16-bit PCM 线性重采样和 640 字节分帧；日志记录原始输入码、WAV 和输出 PCM。
+- [x] 实现有界命令输出、RIFF chunk 解析、16-bit PCM 线性重采样和 640 字节分帧；日志记录原始输入码、WAV/PCM 大小和帧数，不记录音频内容。
 - [x] 在运行镜像的 Debian 软件包安装列表加入 `espeak-ng`，不添加 TTS 模型或 FFmpeg 依赖。
 - [x] 重跑 `cd server && go test ./internal/speech -count=1`，确认合成转换测试通过。
 - [x] 提交：`git add server/internal/speech deploy/Dockerfile && git commit -m "feat: synthesize Linx activation prompts"`。
@@ -152,7 +152,7 @@
 
 - [x] 更新配置/文档测试检查项：`rg -n 'LINX_WS_URL|LINX_DEVICE_TOKENS' README.md deploy` 应只命中解释已移除配置的迁移文字，运行配置不再定义两项变量。
 - [x] 替换 `main.go` 的静态 token 解析/启动分支为 OTA client、espeak speaker 和每 session OTA worker；由 `go test -race ./...` 的 device 状态机测试验证状态机；保留 DEVICE_TOKENS、MCP、KWS、Janus 初始化行为。
-- [x] 从 Compose、env example、smoke test 和部署说明删除静态 Linx URL/token 设置，说明 OTA 自动绑定、扬声器激活码流程及日志中会出现的原始 SSID/激活码/token/音频数据；以 16 kHz PCM16 为例注明每方向原始音频约 2.76 GB/日，Base64 日志约 3.68 GB/日；明确仍禁止记录设备 bearer token、MCP token 和 Wi-Fi 密码。
+- [x] 从 Compose、env example、smoke test 和部署说明删除静态 Linx URL/token 设置，说明 OTA 自动绑定和扬声器激活码流程；日志保留原始 SSID/激活码/token，不保留音频内容，并明确仍禁止记录设备 bearer token、MCP token 和 Wi-Fi 密码。
 - [x] 运行 `cd server && go test -race ./...`，确认所有包与端到端测试通过。
 - [x] 运行 `cd server && go vet ./...`，确认静态检查通过。
 - [ ] 运行 `bash deploy/smoke-test.sh`，确认镜像能安装 `espeak-ng`，设备鉴权、音频、重连与优雅退出工作；已尝试运行，但本机 Docker daemon 不可用，无法启动 smoke 项目。
@@ -164,6 +164,7 @@
 
 - 本次复核：`go test -race -count=1 ./...`、`go vet ./...`、`bash -n deploy/smoke-test.sh`、带临时验证值的 `docker compose config --quiet` 和 `git diff --check` 均通过。
 - OTA 请求/响应、激活语音合成、Linx 握手、绑定状态机和 session 清理日志带设备/会话关联信息及操作耗时；测试验证 OTA 与语音日志字段。
+- 最新要求：音频日志只保留元数据，设备音频帧和合成 WAV/PCM payload 不再写入日志；定向测试验证 payload 不出现。
 - `bash deploy/smoke-test.sh` 在 `docker info` 阶段退出：本机没有 Docker daemon socket，未创建容器或临时 Compose 项目；Docker 环境可用后仍需执行此项。
 - `idf.py` 和宿主 `espeak-ng` 均未安装；ESP-IDF 固件构建及真实普通话合成/硬件播放尚未验证。`espeak-ng` fake executable 测试通过。
 - 代码审查发现的远程明文 WebSocket 凭证风险已由 `24e115b` 修复；OTA 和 Linx 连接端都校验 URL，远程地址必须使用 `wss://`。

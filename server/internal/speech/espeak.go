@@ -3,7 +3,6 @@ package speech
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -83,11 +82,11 @@ func (e Espeak) Synthesize(ctx context.Context, activationCode string) ([][]byte
 		return nil, fmt.Errorf("convert espeak-ng WAV: %w", err)
 	}
 	logger.Info("activation prompt synthesized", "activation_code", activationCode, "prompt", prompt,
-		"wav_bytes", len(wav), "wav_base64", base64.StdEncoding.EncodeToString(wav), "pcm_frames", len(frames),
+		"wav_bytes", len(wav), "pcm_frames", len(frames),
 		"duration_ms", time.Since(startedAt).Milliseconds())
 	for i, frame := range frames {
 		logger.Info("activation prompt PCM frame", "activation_code", activationCode, "frame", i,
-			"bytes", len(frame), "pcm_base64", base64.StdEncoding.EncodeToString(frame))
+			"bytes", len(frame))
 	}
 	return frames, nil
 }

@@ -48,7 +48,7 @@ cp deploy/server.env.example deploy/.env
 
 服务端镜像安装 `espeak-ng`，设备首次连接后会上报当前固件、STA MAC、Wi-Fi SSID/RSSI、芯片、闪存和分区信息。Go 使用这些数据请求官方 OTA；待绑定设备会由设备扬声器播报六位码，每 60 秒重播并轮询绑定状态。请在灵矽控制台输入设备播报的激活码并完成智能体绑定。绑定后，Go 重新请求 OTA 并使用返回的 WebSocket URL/token 建立该设备独立的灵矽会话。
 
-不再配置 `LINX_WS_URL` 或 `LINX_DEVICE_TOKENS`。设备到 Go 的 `DEVICE_TOKENS`、云端 MCP 的 `MCP_API_TOKEN` 仍需配置；OTA token 只保存在当前进程的设备会话内存中。调试日志会保留完整 SSID、OTA 请求/响应、激活码、Linx token 和上/下行音频 Base64。16 kHz PCM16 的音频日志每个方向约 3.68 GB/设备/日；在启用大量设备前应确认日志采集、存储和保留容量。设备 bearer token、MCP token 和 Wi-Fi 密码不会写入日志。
+不再配置 `LINX_WS_URL` 或 `LINX_DEVICE_TOKENS`。设备到 Go 的 `DEVICE_TOKENS`、云端 MCP 的 `MCP_API_TOKEN` 仍需配置；OTA token 只保存在当前进程的设备会话内存中。调试日志会保留完整 SSID、OTA 请求/响应、激活码和 Linx token。音频日志只包含方向、帧长度、帧数和会话信息，不包含 PCM、WAV 或其他可还原音频的内容。设备 bearer token、MCP token 和 Wi-Fi 密码不会写入日志。
 
 配置开放 TCP `8088`（HTTP WebSocket）和 UDP `10000-10100`（WebRTC ICE/RTP）。生产环境应将 Janus WebSocket 限制为 Go 服务可访问，并通过反向代理提供 TLS/WSS；不要把未启用 HTTPS 的 HTTP transport 直接暴露到公网。部署在 NAT 后方时，需要在 Janus 中设置公网映射地址，或部署 TURN 服务并在 Go 的 ICE server 配置中指定。当前 compose 是联调起点，真实服务器上的防火墙/NAT 地址必须按实际网络校验。
 
@@ -56,7 +56,7 @@ Janus Image、配置路径和配置项需在目标镜像中核对。健康检查
 
 ## Go 服务数据
 
-SQLite 数据库默认文件为 `server/intercom.db`，可用 `DATABASE_PATH` 改到持久化卷。停止服务前发送 SIGTERM，服务会执行 HTTP graceful shutdown；备份时先停止写入或使用 SQLite 在线备份能力。日志走 JSON stdout；原始音频、SSID 和 Linx OTA 凭证会按当前测试项目的排障要求写入，Wi-Fi 密码、设备到 Go 的 bearer token 和 MCP token 不会记录。
+SQLite 数据库默认文件为 `server/intercom.db`，可用 `DATABASE_PATH` 改到持久化卷。停止服务前发送 SIGTERM，服务会执行 HTTP graceful shutdown；备份时先停止写入或使用 SQLite 在线备份能力。日志走 JSON stdout；SSID 和 Linx OTA 凭证会按当前测试项目的排障要求写入，音频只记录帧元数据，Wi-Fi 密码、设备到 Go 的 bearer token 和 MCP token 不会记录。
 
 个人机器及测试设备配置放在仓库根目录 `.local/`，不要提交。
 

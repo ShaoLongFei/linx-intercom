@@ -67,7 +67,7 @@ func TestConvertWAVRejectsInvalidFormatsAndChunks(t *testing.T) {
 	}
 }
 
-func TestEspeakRunsChinesePromptAsOneArgument(t *testing.T) {
+func TestEspeakLogsMetadataWithoutAudioPayload(t *testing.T) {
 	dir := t.TempDir()
 	wavPath := filepath.Join(dir, "fixture.wav")
 	argsPath := filepath.Join(dir, "args.txt")
@@ -99,9 +99,12 @@ func TestEspeakRunsChinesePromptAsOneArgument(t *testing.T) {
 		t.Fatalf("espeak args = %q, want %q", args, want)
 	}
 	for _, encoded := range []string{base64.StdEncoding.EncodeToString(wav), base64.StdEncoding.EncodeToString(frames[0])} {
-		if !strings.Contains(logs.String(), encoded) {
-			t.Fatalf("logs omit complete audio value %q", encoded)
+		if strings.Contains(logs.String(), encoded) {
+			t.Fatalf("logs contain raw generated audio %q", encoded)
 		}
+	}
+	if !strings.Contains(logs.String(), `"wav_bytes":`) || !strings.Contains(logs.String(), `"pcm_frames":1`) {
+		t.Fatalf("logs omit WAV size or PCM frame count: %s", logs.String())
 	}
 	if !strings.Contains(logs.String(), `"session_id":"session-a"`) || !strings.Contains(logs.String(), `"duration_ms":`) {
 		t.Fatalf("logs omit session ID or operation duration: %s", logs.String())
