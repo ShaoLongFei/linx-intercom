@@ -3,6 +3,7 @@ package device
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/coder/websocket"
 )
+
+const maxControlFrameSize = 16 * 1024
 
 type TokenVerifier interface {
 	Verify(deviceID, token string) bool
@@ -38,7 +41,7 @@ func NewHandler(manager *SessionManager, verifier TokenVerifier) http.Handler {
 			slog.Warn("device websocket upgrade failed", "device_id", deviceID, "error", err)
 			return
 		}
-		conn.SetReadLimit(maxAudioFrameSize)
+		conn.SetReadLimit(maxControlFrameSize)
 		session, generation, err := manager.Attach(deviceID, conn)
 		if err != nil {
 			_ = conn.Close(websocket.StatusInternalError, "session unavailable")
@@ -92,10 +95,24 @@ func serveConnection(manager *SessionManager, session *Session, generation uint6
 				slog.Warn("device audio frame rejected", "device_id", session.DeviceID, "session_id", session.ID, "size", len(payload))
 				continue
 			}
+			slog.Info("device audio frame", "device_id", session.DeviceID, "session_id", session.ID, "direction", "uplink", "bytes", len(payload), "pcm_base64", base64.StdEncoding.EncodeToString(payload))
 			if session.EnqueueAudioIn(payload) {
 				slog.Warn("device audio queue dropped stale frame", "device_id", session.DeviceID, "session_id", session.ID, "direction", "uplink")
 			}
 		case websocket.MessageText:
+			var messageType struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(payload, &messageType); err == nil && messageType.Type == "device_info" {
+				slog.Info("device OTA metadata received", "device_id", session.DeviceID, "session_id", session.ID, "json", string(payload))
+				info, err := decodeDeviceInfo(payload, session.DeviceID)
+				if err != nil {
+					slog.Warn("device OTA metadata rejected", "device_id", session.DeviceID, "session_id", session.ID, "error", err)
+					continue
+				}
+				session.UpdateDeviceInfo(info)
+				continue
+			}
 			message, err := decodeControl(payload)
 			if err != nil {
 				slog.Warn("device control frame rejected", "device_id", session.DeviceID, "session_id", session.ID, "error", err)
@@ -132,6 +149,7 @@ func writeMessages(ctx context.Context, session *Session, conn *websocket.Conn) 
 				slog.Warn("device audio downlink failed", "device_id", session.DeviceID, "session_id", session.ID, "error", err)
 				return
 			}
+			slog.Info("device audio frame", "device_id", session.DeviceID, "session_id", session.ID, "direction", "downlink", "bytes", len(message.audio), "pcm_base64", base64.StdEncoding.EncodeToString(message.audio))
 			// 云端 TTS 可能突发返回整句，按设备 20 ms 播放节奏发送，避免挤爆 ESP32 队列。
 			timer := time.NewTimer(20 * time.Millisecond)
 			select {

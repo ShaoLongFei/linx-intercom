@@ -10,6 +10,12 @@ config INTERCOM_BACKEND_URI
     string "Go backend WebSocket URI"
     default "wss://intercom.example.com/device/ws"
 
+config INTERCOM_SERIAL_NUMBER
+    string "Optional pre-registered device serial number"
+    default ""
+    help
+        Leave empty for activation version 1. Set a valid pre-registered serial number to use activation version 2.
+
 config INTERCOM_I2S_BCLK_GPIO
     int "I2S bit clock GPIO"
     range 0 48

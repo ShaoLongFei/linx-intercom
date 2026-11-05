@@ -1,8 +1,12 @@
 package device
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +15,7 @@ import (
 
 	"github.com/coder/websocket"
 	"linx-intercom/server/internal/audio"
+	"linx-intercom/server/internal/ota"
 )
 
 func TestDeviceHandlerRejectsInvalidCredentialsBeforeUpgrade(t *testing.T) {
@@ -111,6 +116,186 @@ func TestDeviceWebSocketExchangesAudioAndControlFrames(t *testing.T) {
 		t.Fatalf("control downlink = (%v, %q)", messageType, payload)
 	}
 
+}
+
+func TestDecodeDeviceInfoValidatesIdentityAndRequiredMetadata(t *testing.T) {
+	valid := ota.DeviceInfo{
+		ActivationVersion: 1,
+		Report: ota.ReportPayload{
+			MACAddress:  "AA:BB:CC:DD:EE:FF",
+			Application: ota.Application{Name: "linx-intercom", Version: "1.2.3", ELFSHA256: strings.Repeat("a", 64)},
+			Board:       ota.Board{Type: "linx-intercom-esp32s3", SSID: "test-wifi", RSSI: -42},
+		},
+	}
+	payload := func(info ota.DeviceInfo) []byte {
+		t.Helper()
+		data, err := json.Marshal(map[string]any{"type": "device_info", "device_info": info})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	got, err := decodeDeviceInfo(payload(valid), "AA:BB:CC:DD:EE:FF")
+	if err != nil || got.Report.Board.SSID != "test-wifi" {
+		t.Fatalf("decode valid device info = %+v, %v", got, err)
+	}
+
+	cases := []struct {
+		name  string
+		input []byte
+	}{
+		{name: "wrong type", input: []byte(`{"type":"listen","device_info":{}}`)},
+		{name: "missing payload", input: []byte(`{"type":"device_info"}`)},
+		{name: "MAC mismatch", input: payload(ota.DeviceInfo{ActivationVersion: 1, Report: ota.ReportPayload{MACAddress: "00:00:00:00:00:00"}})},
+		{name: "version two without serial", input: payload(ota.DeviceInfo{ActivationVersion: 2, Report: valid.Report})},
+		{name: "version one with serial", input: payload(ota.DeviceInfo{ActivationVersion: 1, SerialNumber: "SERIAL-0001", Report: valid.Report})},
+		{name: "missing SSID", input: payload(ota.DeviceInfo{ActivationVersion: 1, Report: ota.ReportPayload{MACAddress: valid.Report.MACAddress, Application: valid.Report.Application, Board: ota.Board{Type: valid.Report.Board.Type}}})},
+		{name: "missing firmware hash", input: payload(ota.DeviceInfo{ActivationVersion: 1, Report: ota.ReportPayload{MACAddress: valid.Report.MACAddress, Application: ota.Application{Name: "linx-intercom", Version: "1.2.3"}, Board: valid.Report.Board}})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := decodeDeviceInfo(tc.input, "AA:BB:CC:DD:EE:FF"); err == nil {
+				t.Fatal("invalid device metadata was accepted")
+			}
+		})
+	}
+}
+
+func TestDeviceInfoUsesSessionChannelAndInvalidIdentityKeepsConnection(t *testing.T) {
+	deviceID := "AA:BB:CC:DD:EE:FF"
+	manager := NewSessionManager(time.Second)
+	server := httptest.NewServer(NewHandler(manager, TokenMap{deviceID: "secret-a"}))
+	defer server.Close()
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/device/ws"
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: http.Header{
+		"Device-Id": []string{deviceID}, "Authorization": []string{"Bearer secret-a"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	var session *Session
+	deadline := time.Now().Add(time.Second)
+	for session == nil && time.Now().Before(deadline) {
+		session = manager.Current(deviceID)
+		time.Sleep(time.Millisecond)
+	}
+	if session == nil {
+		t.Fatal("websocket connection did not create a session")
+	}
+
+	invalid := `{"type":"device_info","device_info":{"activation_version":1,"report":{"mac_address":"00:00:00:00:00:00"}}}`
+	if err := conn.Write(ctx, websocket.MessageText, []byte(invalid)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-session.DeviceInfo:
+		t.Fatal("MAC-mismatched metadata reached OTA channel")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	info := ota.DeviceInfo{
+		ActivationVersion: 1,
+		Report: ota.ReportPayload{
+			MACAddress:  deviceID,
+			Application: ota.Application{Name: "linx-intercom", Version: "1.2.3", ELFSHA256: strings.Repeat("b", 64)},
+			Board:       ota.Board{Type: "linx-intercom-esp32s3", SSID: "test-wifi", RSSI: -40},
+		},
+	}
+	valid, err := json.Marshal(map[string]any{"type": "device_info", "device_info": info})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Write(ctx, websocket.MessageText, valid); err != nil {
+		t.Fatalf("connection closed after invalid metadata: %v", err)
+	}
+	select {
+	case got := <-session.DeviceInfo:
+		if got.Report.Board.SSID != "test-wifi" {
+			t.Fatalf("device info = %+v", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("valid metadata did not reach OTA channel")
+	}
+	select {
+	case message := <-session.ControlIn:
+		t.Fatalf("device_info was forwarded as Linx control: %+v", message)
+	default:
+	}
+}
+
+func TestDeviceAudioLogsContainRecoverableBase64Frames(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+
+	deviceID := "AA:BB:CC:DD:EE:FF"
+	manager := NewSessionManager(time.Second)
+	server := httptest.NewServer(NewHandler(manager, TokenMap{deviceID: "secret-a"}))
+	defer server.Close()
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/device/ws"
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: http.Header{
+		"Device-Id": []string{deviceID}, "Authorization": []string{"Bearer secret-a"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	var session *Session
+	deadline := time.Now().Add(time.Second)
+	for session == nil && time.Now().Before(deadline) {
+		session = manager.Current(deviceID)
+		time.Sleep(time.Millisecond)
+	}
+	if session == nil {
+		t.Fatal("websocket connection did not create a session")
+	}
+
+	uplink := []byte{0, 1, 2, 253, 254, 255}
+	if err := conn.Write(ctx, websocket.MessageBinary, uplink); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-session.AudioIn:
+	case <-ctx.Done():
+		t.Fatal("uplink frame was not received")
+	}
+	downlink := []byte{255, 0, 129, 127}
+	if session.EnqueueAudioOut(downlink) {
+		t.Fatal("unexpected downlink queue drop")
+	}
+	if _, _, err := conn.Read(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, frame := range [][]byte{uplink, downlink} {
+		encoded := base64.StdEncoding.EncodeToString(frame)
+		if !strings.Contains(logs.String(), encoded) {
+			t.Fatalf("logs do not contain complete PCM frame %q: %s", encoded, logs.String())
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil || !bytes.Equal(decoded, frame) {
+			t.Fatalf("logged frame did not decode to original: %v", err)
+		}
+	}
+}
+
+func TestSessionDeviceInfoKeepsOnlyLatestMetadata(t *testing.T) {
+	session := newSession("AA:BB:CC:DD:EE:FF", "user-a", 2)
+	first := ota.DeviceInfo{Report: ota.ReportPayload{Board: ota.Board{SSID: "old-network"}}}
+	latest := ota.DeviceInfo{Report: ota.ReportPayload{Board: ota.Board{SSID: "current-network"}}}
+	session.UpdateDeviceInfo(first)
+	session.UpdateDeviceInfo(latest)
+	if got := <-session.DeviceInfo; got.Report.Board.SSID != "current-network" {
+		t.Fatalf("session retained stale metadata: %+v", got)
+	}
+	if len(session.DeviceInfo) != 0 {
+		t.Fatalf("device metadata queue retained %d stale values", len(session.DeviceInfo))
+	}
 }
 
 func TestSessionReconnectWithinGracePreservesSessionAndUser(t *testing.T) {

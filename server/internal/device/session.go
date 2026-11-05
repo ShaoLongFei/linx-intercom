@@ -13,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 	"linx-intercom/server/internal/audio"
 	"linx-intercom/server/internal/linx"
+	"linx-intercom/server/internal/ota"
 )
 
 const sessionQueueSize = 32
@@ -31,20 +32,21 @@ type Session struct {
 	AudioOut     chan downlinkMessage
 	ControlIn    chan ControlMessage
 	ControlOut   chan ControlMessage
+	DeviceInfo   chan ota.DeviceInfo
 	LinxAudioIn  chan []byte
 	LinxEventsIn chan json.RawMessage
 	LinxOut      chan linx.Result
 	AudioRouter  *audio.Router
 	Done         <-chan struct{}
 
-	mu                    sync.Mutex
-	conn                  *websocket.Conn
-	generation            uint64
-	timer                 *time.Timer
-	cancel                context.CancelFunc
-	mediaJoinMu           sync.Mutex
-	mediaMu               sync.Mutex
-	media                 *roomMediaBinding
+	mu          sync.Mutex
+	conn        *websocket.Conn
+	generation  uint64
+	timer       *time.Timer
+	cancel      context.CancelFunc
+	mediaJoinMu sync.Mutex
+	mediaMu     sync.Mutex
+	media       *roomMediaBinding
 	// 仅在本轮正常 TTS 停止后接受设备确认，避免重连重放的旧确认切回房间。
 	awaitingPlaybackDrain atomic.Bool
 }
@@ -60,6 +62,7 @@ func newSession(deviceID, userID string, queueSize int) *Session {
 		AudioOut:     make(chan downlinkMessage, queueSize),
 		ControlIn:    make(chan ControlMessage, queueSize),
 		ControlOut:   make(chan ControlMessage, queueSize),
+		DeviceInfo:   make(chan ota.DeviceInfo, 1),
 		LinxAudioIn:  make(chan []byte, queueSize),
 		LinxEventsIn: make(chan json.RawMessage, queueSize),
 		LinxOut:      make(chan linx.Result, queueSize),
@@ -75,6 +78,14 @@ func (s *Session) EnqueueAudioIn(frame []byte) bool {
 		return true
 	}
 	return false
+}
+
+func (s *Session) UpdateDeviceInfo(info ota.DeviceInfo) {
+	select {
+	case <-s.DeviceInfo:
+	default:
+	}
+	s.DeviceInfo <- info
 }
 
 func (s *Session) EnqueueAudioOut(frame []byte) bool {

@@ -238,11 +238,15 @@ func (c *Client) CheckActivation(ctx context.Context, deviceID string) (bool, er
 }
 
 func validateDeviceInfo(deviceID, clientID, userAgent string, info DeviceInfo) error {
-	if _, err := net.ParseMAC(deviceID); err != nil {
-		return fmt.Errorf("invalid authenticated Device-Id %q: %w", deviceID, err)
-	}
 	if clientID == "" || userAgent == "" {
 		return errors.New("Linx Client-Id and User-Agent are required")
+	}
+	return ValidateDeviceInfo(deviceID, info)
+}
+
+func ValidateDeviceInfo(deviceID string, info DeviceInfo) error {
+	if _, err := net.ParseMAC(deviceID); err != nil {
+		return fmt.Errorf("invalid authenticated Device-Id %q: %w", deviceID, err)
 	}
 	if info.ActivationVersion != 1 && info.ActivationVersion != 2 {
 		return fmt.Errorf("unsupported activation version %d", info.ActivationVersion)
