@@ -30,11 +30,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 测试身份仅在本次 Compose 进程环境内覆盖模板值，并禁用外部 Linx 连接。
+# 测试身份仅在本次 Compose 进程环境内覆盖模板值；模拟器不提供 OTA 元数据，不会连接灵矽账号。
 export DEVICE_TOKENS='{"smoke-device":"smoke-token"}'
-export LINX_DEVICE_TOKENS='{}'
 export MCP_API_TOKEN='intercom-local-smoke-only'
-export LINX_WS_URL=''
 export JANUS_API_SECRET=''
 export JANUS_ADMIN_KEY=''
 export KWS_ENCODER='' KWS_DECODER='' KWS_JOINER='' KWS_TOKENS='' KWS_KEYWORDS_FILE=''
@@ -57,6 +55,11 @@ with wave.open(sys.argv[1], "wb") as output:
 PY
 
 "${compose[@]}" up --build -d
+"${compose[@]}" exec -T server espeak-ng -v cmn --stdout "灵矽激活码：一，二，三，四，五，六" >"$tmp_dir/activation.wav"
+if [[ ! -s "$tmp_dir/activation.wav" ]]; then
+  echo "espeak-ng did not produce activation audio" >&2
+  exit 1
+fi
 for attempt in $(seq 1 45); do
   if curl -fsS "http://127.0.0.1:${INTERCOM_HTTP_PORT}/healthz" >/dev/null; then
     break

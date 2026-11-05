@@ -56,9 +56,7 @@ static void add_partition_table(cJSON *report)
         cJSON_AddItemToArray(partitions, item);
         iterator = esp_partition_next(iterator);
     }
-    if (iterator != NULL) {
-        esp_partition_iterator_release(iterator);
-    }
+    esp_partition_iterator_release(iterator);
 }
 
 static void send_device_info(void)

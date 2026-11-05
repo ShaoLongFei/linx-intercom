@@ -32,8 +32,6 @@ services:
       JANUS_API_SECRET: ${JANUS_API_SECRET:-}
       JANUS_ADMIN_KEY: ${JANUS_ADMIN_KEY:-}
       DEVICE_TOKENS: ${DEVICE_TOKENS:?set DEVICE_TOKENS in deploy/.env}
-      LINX_WS_URL: ${LINX_WS_URL:-wss://xrobo-io.qiniuapi.com/v1/ws/}
-      LINX_DEVICE_TOKENS: ${LINX_DEVICE_TOKENS:-{}}
       MCP_API_TOKEN: ${MCP_API_TOKEN:?set MCP_API_TOKEN in deploy/.env}
       KWS_ENCODER: ${KWS_ENCODER:-}
       KWS_DECODER: ${KWS_DECODER:-}

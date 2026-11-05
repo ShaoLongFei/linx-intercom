@@ -15,9 +15,10 @@ import (
 
 	"linx-intercom/server/internal/audio"
 	"linx-intercom/server/internal/device"
-	"linx-intercom/server/internal/linx"
 	"linx-intercom/server/internal/mcp"
 	"linx-intercom/server/internal/media"
+	"linx-intercom/server/internal/ota"
+	"linx-intercom/server/internal/speech"
 	"linx-intercom/server/internal/store"
 )
 
@@ -82,20 +83,11 @@ func main() {
 	} else {
 		logger.Warn("wake-word detection disabled; configure KWS_ENCODER, KWS_DECODER, KWS_JOINER, KWS_TOKENS, and KWS_KEYWORDS_FILE")
 	}
-	linxURL := os.Getenv("LINX_WS_URL")
-	linxTokens, err := parseDeviceTokens(os.Getenv("LINX_DEVICE_TOKENS"))
-	if err != nil {
-		logger.Error("Linx device token configuration invalid", "error", err)
-		os.Exit(1)
-	}
+	otaClient := ota.NewClient()
+	activationSpeaker := speech.Espeak{}
 	sessions.SetOnCreate(func(session *device.Session) {
 		device.StartAudioRouting(session)
-		token := linxTokens[session.DeviceID]
-		if linxURL == "" || token == "" {
-			logger.Warn("Linx virtual device not configured", "device_id", session.DeviceID)
-			return
-		}
-		device.StartLinxSession(session, linx.Client{URL: linxURL, Token: token, ClientID: session.LinxClientID})
+		device.StartOTADeviceSession(session, otaClient, activationSpeaker)
 	})
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {

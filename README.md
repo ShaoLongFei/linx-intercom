@@ -7,9 +7,9 @@ ESP32-S3 语音对讲设备及其服务端。目标功能包括语音创建房�
 - 设备：ESP32-S3 + ESP-IDF；首次配网使用 BLE BluFi，日常音频通过双向 WebSocket 连接 Go 服务。
 - 后端：Go 服务按设备隔离会话，负责音频路由和房间/好友业务。
 - 实时媒体：Janus Gateway AudioBridge 负责房间混音。
-- 灵矽：虚拟设备通过 WebSocket 接入灵矽；云端 MCP 提供房间和好友工具。
+- 灵矽：Go 为每个 ESP32 会话请求 OTA 配置，待绑定时通过设备扬声器播报激活码，绑定后用独立 URL/token 建立虚拟设备 WebSocket；云端 MCP 提供房间和好友工具。
 
-当前已实现健康检查、设备认证 WebSocket、音频/控制帧收发、会话重连、Linux 虚拟设备模拟器、SQLite 房间/好友数据、灵矽 WebSocket/MCP 工具、动态 Janus 房间、服务端 sherpa-onnx 唤醒检测接入，以及 ESP32-S3 BluFi/I2S/WebSocket 固件。运行 `bash deploy/prepare-kws.sh` 可下载并配置“灵矽灵矽”中文 KWS 模型；模型权重留在 Git 忽略目录。实体 Codec 配置和真实灵矽账号尚未完成实测；Compose smoke test 与 fake peer 测试不能替代真实 Janus 双设备媒体、BluFi 手机兼容性或硬件音频联调。
+当前已实现健康检查、设备认证 WebSocket、音频/控制帧收发、会话重连、Linux 虚拟设备模拟器、SQLite 房间/好友数据、OTA 自动绑定状态机、灵矽 WebSocket/MCP 工具、动态 Janus 房间、服务端 sherpa-onnx 唤醒检测接入，以及 ESP32-S3 BluFi/I2S/WebSocket 固件。运行 `bash deploy/prepare-kws.sh` 可下载并配置“灵矽灵矽”中文 KWS 模型；模型权重留在 Git 忽略目录。OTA 自动绑定和普通话合成尚未用真实灵矽账号与实体硬件验证；Compose smoke test 与 fake peer 测试不能替代真实 Janus 双设备媒体、BluFi 手机兼容性或硬件音频联调。
 
 ## 后端
 
@@ -18,9 +18,11 @@ cd server
 DEVICE_TOKENS='{"device-001":"replace-with-device-token"}' go run ./cmd/intercom-server
 ```
 
-生产联调还需配置 `MCP_API_TOKEN`。绑定过的虚拟灵矽设备配置 `LINX_WS_URL`（优先使用该设备 OTA 返回地址）和 `LINX_DEVICE_TOKENS` JSON 映射。SQLite 文件默认写入 `server/intercom.db`，可通过 `DATABASE_PATH` 修改。服务监听 `LISTEN_ADDR`（默认 `:8080`）。`GET /healthz` 为健康检查，`GET /device/ws` 为设备双向 WebSocket，`GET /mcp` 和 `POST /mcp/message` 为灵矽云端 MCP 服务端点。
+生产部署配置 `DEVICE_TOKENS` 和 `MCP_API_TOKEN`。每个设备通过 `device_info` 报告 OTA 元数据；Go 动态获取绑定状态与 Linx 凭证，不需要静态 `LINX_WS_URL` 或 `LINX_DEVICE_TOKENS`。本地直接运行时需安装 `espeak-ng`，Docker 镜像已包含。SQLite 文件默认写入 `server/intercom.db`，可通过 `DATABASE_PATH` 修改。服务监听 `LISTEN_ADDR`（默认 `:8080`）。`GET /healthz` 为健康检查，`GET /device/ws` 为设备双向 WebSocket，`GET /mcp` 和 `POST /mcp/message` 为灵矽云端 MCP 服务端点。
 
 设备 WebSocket 请求需带 `Device-Id` 和 `Authorization: Bearer <token>`；服务端只接受 `DEVICE_TOKENS` 中登记的设备。每设备上行音频为二进制 PCM16 单声道帧，控制消息为 JSON 文本帧。设备断线后保留运行会话 60 秒供重连，设备身份、稳定 UUID v4 灵矽 `Client-Id`、房间和好友数据存于 SQLite。MCP 请求需带服务端配置的 Bearer token 和灵矽提供的 `X-Linx-Device-Id`；工具调用者身份由该设备头映射得出。
+
+服务为排障记录完整 Wi-Fi SSID、OTA 请求/响应、激活码、Linx token，以及设备上下行 PCM 的逐帧 Base64。16 kHz PCM16 每个方向约产生 3.68 GB/设备/日的 Base64 日志；请按实际部署容量配置 stdout 收集与保留策略。仍不记录设备到 Go 的 bearer token、MCP API token 或 Wi-Fi 密码。Linx token 只保留在进程和设备会话内存中，但 OTA 响应与连接日志按已确认的测试需求会包含其原始值。
 
 运行测试：
 
